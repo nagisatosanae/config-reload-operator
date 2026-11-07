@@ -1,0 +1,63 @@
+# Local demo: one NGINX Deployment whose configuration comes from a ConfigMap
+# mounted as a directory (no subPath, so the kubelet can update the files).
+# Change X-Config-Version / the return body to v2, re-apply, and watch.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: demo
+data:
+  default.conf: |
+    server {
+        listen 80;
+        location / {
+            add_header X-Config-Version v1;
+            return 200 "v1\n";
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-demo
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-demo
+  template:
+    metadata:
+      labels:
+        app: nginx-demo
+    spec:
+      containers:
+        - name: nginx
+          image: demo-nginx:dev
+          imagePullPolicy: Never   # image is loaded into the nodes by hand
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d   # whole directory, never subPath
+      volumes:
+        - name: config
+          configMap:
+            name: nginx-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-demo
+  namespace: demo
+spec:
+  selector:
+    app: nginx-demo
+  ports:
+    - port: 80
+      targetPort: 80
