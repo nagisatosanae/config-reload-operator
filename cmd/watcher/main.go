@@ -3,19 +3,35 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // envWatchDir names the directory to watch. The controller sets it on the
 // container. When it is empty, the watcher only runs the app.
 const envWatchDir = "WATCH_DIR"
+
+const (
+	// quietTime is how long the directory must stay quiet before we look
+	// at it. One ConfigMap update makes several events in a row, and this
+	// turns them into one check.
+	quietTime = 3 * time.Second
+
+	// startupGrace is how long we wait after start before sending any
+	// signal. Until the app is up, the child may still be a start script,
+	// and a signal would kill it.
+	startupGrace = 5 * time.Second
+)
 
 func main() {
 	args := os.Args[1:]
@@ -46,11 +62,13 @@ func main() {
 
 	// 3. Watch the config directory, if we were told which one.
 	if dir := os.Getenv(envWatchDir); dir != "" {
-		if _, err := os.Stat(dir); err != nil {
-			log.Printf("cannot read %s: %v", dir, err)
-		}
 		log.Printf("watching %s", dir)
-		go watch(dir, cmd.Process)
+		go watch(dir, quietTime, startupGrace, func() {
+			log.Println("sending SIGHUP")
+			if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+				log.Printf("could not send SIGHUP: %v", err)
+			}
+		})
 	} else {
 		log.Printf("%s is not set, so config changes are not watched", envWatchDir)
 	}
@@ -70,37 +88,117 @@ func main() {
 	os.Exit(code)
 }
 
-// watch looks at dir once a second and sends SIGHUP to the app when the
-// content of its files changes.
-func watch(dir string, app *os.Process) {
+// watch calls reload when the content of the files in dir has changed.
+//
+// The kernel tells us when something happens in dir, so there is no polling.
+// Events only start a timer. When dir has been quiet for the quiet time, we
+// compare the content with what we saw last, and call reload only if it is
+// different. Nothing is reloaded before the grace time has passed; a change
+// seen earlier is kept and handled right after it.
+func watch(dir string, quiet, grace time.Duration, reload func()) {
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Printf("cannot start watching: %v", err)
+		return
+	}
+	defer func() { _ = w.Close() }()
+
+	if err := w.Add(dir); err != nil {
+		log.Printf("cannot watch %s: %v", dir, err)
+		return
+	}
+
+	started := time.Now()
 	last := hashDir(dir)
-	for range time.Tick(time.Second) {
-		h := hashDir(dir)
-		if h == last {
-			continue
-		}
-		last = h
-		log.Println("change detected, sending SIGHUP")
-		if err := app.Signal(syscall.SIGHUP); err != nil {
-			log.Printf("could not send SIGHUP: %v", err)
+	events := 0
+
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+
+	for {
+		select {
+		case _, ok := <-w.Events:
+			if !ok {
+				return
+			}
+			events++
+			timer.Reset(quiet)
+
+		case err, ok := <-w.Errors:
+			if !ok {
+				return
+			}
+			log.Printf("watch error: %v", err)
+
+		case <-timer.C:
+			// Too early to signal. Come back when the grace time is over.
+			if wait := grace - time.Since(started); wait > 0 {
+				timer.Reset(wait)
+				continue
+			}
+
+			h := hashDir(dir)
+			if h == last {
+				log.Printf("%d events, content is the same", events)
+				events = 0
+				continue
+			}
+			log.Printf("%d events, content changed", events)
+			last = h
+			events = 0
+			reload()
 		}
 	}
 }
 
+// hashDir returns one hash for the names and content of all files in dir.
+//
+// It reads files the way the app does: it follows symlinks, because a
+// ConfigMap volume is made of them. It skips names that start with "..",
+// which the kubelet uses for its own bookkeeping.
 func hashDir(dir string) string {
 	h := sha256.New()
-	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-		f, err := os.Open(p)
-		if err != nil {
-			return nil
-		}
-		defer func() { _ = f.Close() }()
-		_, _ = io.WriteString(h, p)
-		_, _ = io.Copy(h, f)
-		return nil
-	})
+	hashInto(h, dir, "", 0)
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// maxDepth stops hashInto if symlinks ever form a loop.
+const maxDepth = 16
+
+// hashInto adds every file under root/rel to h.
+func hashInto(h hash.Hash, root, rel string, depth int) {
+	if depth > maxDepth {
+		return
+	}
+	entries, err := os.ReadDir(filepath.Join(root, rel))
+	if err != nil {
+		return
+	}
+	// ReadDir returns the entries sorted by name, so the hash is stable.
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "..") {
+			continue
+		}
+		name := filepath.Join(rel, e.Name())
+		path := filepath.Join(root, name)
+
+		info, err := os.Stat(path) // Stat follows symlinks.
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			hashInto(h, root, name, depth+1)
+			continue
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		// The zero bytes keep "name + content" from running together.
+		_, _ = io.WriteString(h, name+"\x00")
+		_, _ = io.Copy(h, f)
+		_, _ = h.Write([]byte{0})
+		_ = f.Close()
+	}
 }
