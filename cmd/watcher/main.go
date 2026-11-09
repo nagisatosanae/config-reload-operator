@@ -10,22 +10,29 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"golang.org/x/sys/unix"
 )
 
-// envWatchDir names the directory to watch. The controller sets it on the
 // container. When it is empty, the watcher only runs the app.
-const envWatchDir = "WATCH_DIR"
+// The controller sets these on the container. When WATCH_DIR is empty, the
+// watcher only runs the app.
+const (
+	envWatchDir = "WATCH_DIR"
+	envSignal   = "WATCH_SIGNAL"
+	envDebounce = "WATCH_DEBOUNCE_SECONDS"
+)
 
 const (
-	// quietTime is how long the directory must stay quiet before we look
-	// at it. One ConfigMap update makes several events in a row, and this
-	// turns them into one check.
-	quietTime = 3 * time.Second
+	// defaultQuiet is how long the directory must stay quiet before we look
+	// at it, when WATCH_DEBOUNCE_SECONDS does not say. One ConfigMap update
+	// makes several events in a row, and this turns them into one check.
+	defaultQuiet = 3 * time.Second
 
 	// startupGrace is how long we wait after start before sending any
 	// signal. Until the app is up, the child may still be a start script,
@@ -61,12 +68,15 @@ func main() {
 	}()
 
 	// 3. Watch the config directory, if we were told which one.
+	// 3. Watch the config directory, if we were told which one.
 	if dir := os.Getenv(envWatchDir); dir != "" {
-		log.Printf("watching %s", dir)
-		go watch(dir, quietTime, startupGrace, func() {
-			log.Println("sending SIGHUP")
-			if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
-				log.Printf("could not send SIGHUP: %v", err)
+		sig := signalFromEnv()
+		quiet := quietFromEnv()
+		log.Printf("watching %s (signal %s, quiet time %s)", dir, unix.SignalName(sig), quiet)
+		go watch(dir, quiet, startupGrace, func() {
+			log.Printf("sending %s", unix.SignalName(sig))
+			if err := cmd.Process.Signal(sig); err != nil {
+				log.Printf("could not send %s: %v", unix.SignalName(sig), err)
 			}
 		})
 	} else {
@@ -86,6 +96,36 @@ func main() {
 	}
 	log.Printf("child exited with code %d", code)
 	os.Exit(code)
+}
+
+// signalFromEnv returns the signal named in WATCH_SIGNAL. It returns SIGHUP
+// when the name is missing or not a real signal.
+func signalFromEnv() syscall.Signal {
+	name := os.Getenv(envSignal)
+	if name == "" {
+		return syscall.SIGHUP
+	}
+	sig := unix.SignalNum(name)
+	if sig == 0 {
+		log.Printf("unknown signal %q in %s, using SIGHUP", name, envSignal)
+		return syscall.SIGHUP
+	}
+	return sig
+}
+
+// quietFromEnv returns the quiet time set in WATCH_DEBOUNCE_SECONDS. It
+// returns the default when the value is missing or not a number 0 or above.
+func quietFromEnv() time.Duration {
+	value := os.Getenv(envDebounce)
+	if value == "" {
+		return defaultQuiet
+	}
+	seconds, err := strconv.Atoi(value)
+	if err != nil || seconds < 0 {
+		log.Printf("bad value %q in %s, using %s", value, envDebounce, defaultQuiet)
+		return defaultQuiet
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // watch calls reload when the content of the files in dir has changed.

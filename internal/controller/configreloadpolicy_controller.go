@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -45,8 +46,10 @@ const (
 	// conditionReady is the one condition this controller reports.
 	conditionReady = "Ready"
 
-	// envWatchDir tells the watcher which directory to watch.
+	// The watcher reads these from its environment.
 	envWatchDir = "WATCH_DIR"
+	envSignal   = "WATCH_SIGNAL"
+	envDebounce = "WATCH_DEBOUNCE_SECONDS"
 
 	// retryAfter is how long to wait before looking again when something
 	// the policy points at is missing or wrong.
@@ -70,9 +73,10 @@ const (
 // Reconcile makes the target Deployment match the policy.
 //
 // It finds the container named in the policy, finds where that container
-// mounts the ConfigMap, and sets WATCH_DIR on the container so the watcher
-// knows which directory to watch. It writes nothing when everything is
-// already right, so it is safe to run again and again.
+// mounts the ConfigMap, and sets env on the container so the watcher knows
+// which directory to watch, which signal to send and how long to wait. It
+// writes nothing when everything is already right, so it is safe to run
+// again and again.
 func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -101,15 +105,20 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 			r.setReady(ctx, &policy, metav1.ConditionFalse, reason, msg)
 	}
 
-	// 4. Set WATCH_DIR on the container, but only if it is not right yet.
+	// 4. Tell the watcher what to do through env on the container, but only
+	// write when something is not right yet.
 	container := &dep.Spec.Template.Spec.Containers[idx]
-	if !hasEnv(container.Env, envWatchDir, watchDir) {
+	want := watcherEnv(&policy, watchDir)
+	if !hasAllEnv(container.Env, want) {
 		before := dep.DeepCopy()
-		container.Env = setEnv(container.Env, envWatchDir, watchDir)
+		for _, e := range want {
+			container.Env = setEnv(container.Env, e.Name, e.Value)
+		}
 		if err := r.Patch(ctx, &dep, client.StrategicMergeFrom(before)); err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("set WATCH_DIR", "deployment", dep.Name, "container", container.Name, "dir", watchDir)
+		log.Info("configured watcher", "deployment", dep.Name, "container", container.Name,
+			"dir", watchDir, "signal", want[1].Value, "debounceSeconds", want[2].Value)
 	}
 
 	// 5. Report success.
@@ -155,6 +164,36 @@ func findWatchDir(dep *appsv1.Deployment, containerName, configMapName string) (
 	}
 	return idx, "", reasonConfigMapNotMounted,
 		fmt.Sprintf("container %q does not mount ConfigMap %q", containerName, configMapName)
+}
+
+// watcherEnv returns the env the watcher needs for this policy: the
+// directory, the signal and the quiet time, in that order.
+func watcherEnv(policy *reloadv1alpha1.ConfigReloadPolicy, watchDir string) []corev1.EnvVar {
+	// The API server fills in the defaults. These are only a safety net.
+	signal := policy.Spec.Reload.Signal
+	if signal == "" {
+		signal = "SIGHUP"
+	}
+	debounce := int32(3)
+	if policy.Spec.Reload.DebounceSeconds != nil {
+		debounce = *policy.Spec.Reload.DebounceSeconds
+	}
+
+	return []corev1.EnvVar{
+		{Name: envWatchDir, Value: watchDir},
+		{Name: envSignal, Value: signal},
+		{Name: envDebounce, Value: strconv.Itoa(int(debounce))},
+	}
+}
+
+// hasAllEnv reports whether every wanted entry is already set.
+func hasAllEnv(env, want []corev1.EnvVar) bool {
+	for _, w := range want {
+		if !hasEnv(env, w.Name, w.Value) {
+			return false
+		}
+	}
+	return true
 }
 
 // hasEnv reports whether the list already has name set to value.
