@@ -14,7 +14,20 @@ spec:
     singular: configreloadpolicy
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.workloadRef.name
+      name: Workload
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: ConfigReloadPolicy is the Schema for the configreloadpolicies
@@ -40,10 +53,74 @@ spec:
           spec:
             description: spec defines the desired state of ConfigReloadPolicy
             properties:
-              foo:
-                description: foo is an example field of ConfigReloadPolicy. Edit configreloadpolicy_types.go
-                  to remove/update
+              configMapRef:
+                description: configMapRef is the ConfigMap mounted into that container.
+                properties:
+                  name:
+                    description: |-
+                      name is the name of the ConfigMap. It must be in the same namespace as
+                      the policy.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              containerName:
+                description: containerName is the container that runs the watcher
+                  and the app.
+                maxLength: 63
+                minLength: 1
                 type: string
+              reload:
+                default: {}
+                description: |-
+                  reload says how to reload the app. If you leave it out, the app gets
+                  SIGHUP three seconds after the last change.
+                properties:
+                  debounceSeconds:
+                    default: 3
+                    description: |-
+                      debounceSeconds is how long to wait after the last change before
+                      reloading. It is a quiet period, not a polling interval.
+                    format: int32
+                    maximum: 3600
+                    minimum: 0
+                    type: integer
+                  signal:
+                    default: SIGHUP
+                    description: signal is the signal sent to the app when the config
+                      changes.
+                    enum:
+                    - SIGHUP
+                    - SIGUSR1
+                    - SIGUSR2
+                    type: string
+                type: object
+              workloadRef:
+                description: workloadRef is the workload to reload.
+                properties:
+                  kind:
+                    default: Deployment
+                    description: kind is the kind of the workload. Only Deployment
+                      is supported for now.
+                    enum:
+                    - Deployment
+                    type: string
+                  name:
+                    description: |-
+                      name is the name of the workload. It must be in the same namespace as
+                      the policy.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - configMapRef
+            - containerName
+            - workloadRef
             type: object
           status:
             description: status defines the observed state of ConfigReloadPolicy

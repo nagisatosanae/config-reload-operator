@@ -21,19 +21,74 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// Run "make manifests generate" after you change this file.
 
-// ConfigReloadPolicySpec defines the desired state of ConfigReloadPolicy
-type ConfigReloadPolicySpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+// TODO: add an optional namespace field once cross-namespace refs are supported.
 
-	// foo is an example field of ConfigReloadPolicy. Edit configreloadpolicy_types.go to remove/update
+// WorkloadRef points at the workload that should be reloaded.
+type WorkloadRef struct {
+	// kind is the kind of the workload. Only Deployment is supported for now.
+	// +kubebuilder:validation:Enum=Deployment
+	// +kubebuilder:default=Deployment
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Kind string `json:"kind,omitempty"`
+
+	// name is the name of the workload. It must be in the same namespace as
+	// the policy.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	Name string `json:"name"`
+}
+
+// ConfigMapRef points at the ConfigMap that holds the config files.
+type ConfigMapRef struct {
+	// name is the name of the ConfigMap. It must be in the same namespace as
+	// the policy.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	Name string `json:"name"`
+}
+
+// ReloadSpec says how to tell the app to reload its config.
+type ReloadSpec struct {
+	// signal is the signal sent to the app when the config changes.
+	// +kubebuilder:validation:Enum=SIGHUP;SIGUSR1;SIGUSR2
+	// +kubebuilder:default=SIGHUP
+	// +optional
+	Signal string `json:"signal,omitempty"`
+
+	// debounceSeconds is how long to wait after the last change before
+	// reloading. It is a quiet period, not a polling interval.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=3600
+	// +kubebuilder:default=3
+	// +optional
+	DebounceSeconds *int32 `json:"debounceSeconds,omitempty"`
+}
+
+// ConfigReloadPolicySpec defines the desired state of ConfigReloadPolicy.
+type ConfigReloadPolicySpec struct {
+	// workloadRef is the workload to reload.
+	// +required
+	WorkloadRef WorkloadRef `json:"workloadRef"`
+
+	// containerName is the container that runs the watcher and the app.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +required
+	ContainerName string `json:"containerName"`
+
+	// configMapRef is the ConfigMap mounted into that container.
+	// +required
+	ConfigMapRef ConfigMapRef `json:"configMapRef"`
+
+	// reload says how to reload the app. If you leave it out, the app gets
+	// SIGHUP three seconds after the last change.
+	// +kubebuilder:default={}
+	// +optional
+	Reload ReloadSpec `json:"reload,omitzero"`
 }
 
 // ConfigReloadPolicyStatus defines the observed state of ConfigReloadPolicy.
@@ -61,6 +116,10 @@ type ConfigReloadPolicyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Workload",type=string,JSONPath=`.spec.workloadRef.name`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ConfigReloadPolicy is the Schema for the configreloadpolicies API
 type ConfigReloadPolicy struct {

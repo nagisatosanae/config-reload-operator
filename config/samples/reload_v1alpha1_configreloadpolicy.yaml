@@ -4,6 +4,11 @@ metadata:
   labels:
     app.kubernetes.io/name: config-reload-operator
     app.kubernetes.io/managed-by: kustomize
-  name: configreloadpolicy-sample
-spec: {}
-  # TODO(user): Add fields here
+  name: nginx-reload
+  namespace: demo
+spec:
+  workloadRef:
+    name: nginx-demo
+  containerName: nginx
+  configMapRef:
+    name: nginx-config

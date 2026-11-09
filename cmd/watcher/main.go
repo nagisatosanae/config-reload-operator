@@ -78,7 +78,7 @@ func hashDir(dir string) string {
 		if err != nil {
 			return nil
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		_, _ = io.WriteString(h, p)
 		_, _ = io.Copy(h, f)
 		return nil

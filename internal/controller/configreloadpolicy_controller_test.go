@@ -54,7 +54,13 @@ var _ = Describe("ConfigReloadPolicy Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					// The test only needs a valid policy. The names do not
+					// have to exist in the test API server yet.
+					Spec: reloadv1alpha1.ConfigReloadPolicySpec{
+						WorkloadRef:   reloadv1alpha1.WorkloadRef{Name: "nginx-demo"},
+						ContainerName: "nginx",
+						ConfigMapRef:  reloadv1alpha1.ConfigMapRef{Name: "nginx-config"},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
