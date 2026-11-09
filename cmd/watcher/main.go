@@ -44,20 +44,18 @@ func main() {
 		}
 	}()
 
-	go func() {
-		// 3. Watch the config directory, if we were told which one.
-		if dir := os.Getenv(envWatchDir); dir != "" {
-			if _, err := os.Stat(dir); err != nil {
-				log.Printf("cannot read %s: %v", dir, err)
-			}
-			log.Printf("watching %s", dir)
-			go watch(dir, cmd.Process)
-		} else {
-			log.Printf("%s is not set, so config changes are not watched", envWatchDir)
+	// 3. Watch the config directory, if we were told which one.
+	if dir := os.Getenv(envWatchDir); dir != "" {
+		if _, err := os.Stat(dir); err != nil {
+			log.Printf("cannot read %s: %v", dir, err)
 		}
-	}()
+		log.Printf("watching %s", dir)
+		go watch(dir, cmd.Process)
+	} else {
+		log.Printf("%s is not set, so config changes are not watched", envWatchDir)
+	}
 
-	// 3. Exit with the child's exit code (128+N if it died from a signal).
+	// 4. Exit with the child's exit code (128+N if it died from a signal).
 	err := cmd.Wait()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
