@@ -13,7 +13,9 @@ import (
 	"time"
 )
 
-const watchDir = "/etc/nginx/conf.d"
+// envWatchDir names the directory to watch. The controller sets it on the
+// container. When it is empty, the watcher only runs the app.
+const envWatchDir = "WATCH_DIR"
 
 func main() {
 	args := os.Args[1:]
@@ -43,13 +45,15 @@ func main() {
 	}()
 
 	go func() {
-		last := hashDir(watchDir)
-		for range time.Tick(time.Second) {
-			if h := hashDir(watchDir); h != last {
-				last = h
-				log.Println("change detected, sending SIGHUP")
-				_ = cmd.Process.Signal(syscall.SIGHUP)
+		// 3. Watch the config directory, if we were told which one.
+		if dir := os.Getenv(envWatchDir); dir != "" {
+			if _, err := os.Stat(dir); err != nil {
+				log.Printf("cannot read %s: %v", dir, err)
 			}
+			log.Printf("watching %s", dir)
+			go watch(dir, cmd.Process)
+		} else {
+			log.Printf("%s is not set, so config changes are not watched", envWatchDir)
 		}
 	}()
 
@@ -66,6 +70,23 @@ func main() {
 	}
 	log.Printf("child exited with code %d", code)
 	os.Exit(code)
+}
+
+// watch looks at dir once a second and sends SIGHUP to the app when the
+// content of its files changes.
+func watch(dir string, app *os.Process) {
+	last := hashDir(dir)
+	for range time.Tick(time.Second) {
+		h := hashDir(dir)
+		if h == last {
+			continue
+		}
+		last = h
+		log.Println("change detected, sending SIGHUP")
+		if err := app.Signal(syscall.SIGHUP); err != nil {
+			log.Printf("could not send SIGHUP: %v", err)
+		}
+	}
 }
 
 func hashDir(dir string) string {
