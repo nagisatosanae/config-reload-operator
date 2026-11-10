@@ -9,6 +9,11 @@
 Reload an app's config with a signal when its ConfigMap changes. The Pod is
 not replaced.
 
+![Demo: NGINX goes from v1 to v2 in the same Pod](docs/demo.gif)
+
+This is quick start steps 3 to 5 on a local cluster. The GIF is drawn from
+the output of a real run. The wait for the kubelet is cut out.
+
 ## Background
 
 Many apps do not notice when their config files change. But they read the
@@ -310,6 +315,13 @@ downloads the two binaries the first time.
 | controller | 17 envtest cases and 3 Go tests | Defaults and bad values at the API server, settings written once and not again, your own environment variables kept, every not-ready reason, clean-up when a policy is deleted. |
 
 GitHub Actions runs the tests and the linter on every push.
+
+**What the tests do not cover.** No automated test runs the whole chain on a
+real cluster: the kubelet, NGINX, the images and the Helm chart together.
+The parts are tested one by one. The watcher tests copy what the kubelet
+does when it swaps the files, in a temporary directory. The controller tests
+use a real API server. Joining the parts is checked by hand with the quick
+start above. An end-to-end test on a kind cluster is the next thing to add.
 
 ## Limits
 
