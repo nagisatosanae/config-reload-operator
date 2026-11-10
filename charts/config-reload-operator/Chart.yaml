@@ -1,0 +1,14 @@
+apiVersion: v2
+name: config-reload-operator
+description: Reloads an app by signal when its ConfigMap changes, without replacing the Pod.
+type: application
+
+# Version of the chart.
+version: 0.1.0
+
+# Version of the controller. It is also the default image tag.
+appVersion: "0.1.0"
+
+home: https://github.com/nagisatosanae/config-reload-operator
+sources:
+  - https://github.com/nagisatosanae/config-reload-operator

@@ -1,0 +1,24 @@
+# Number of controller Pods. Leader election is always on, so with more than
+# one Pod a single Pod does the work and the others wait to take over.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/nagisatosanae/config-reload-operator/manager
+  # Empty means the appVersion in Chart.yaml.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Secrets for pulling the image from a private registry.
+imagePullSecrets: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

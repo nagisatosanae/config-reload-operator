@@ -1,0 +1,106 @@
+# What the controller may do in the whole cluster. Keep the rules the same as
+# config/rbac/role.yaml, which controller-gen writes from the markers in the
+# controller code.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "config-reload-operator.fullname" . }}
+  labels:
+    {{- include "config-reload-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - list
+      - patch
+      - watch
+  - apiGroups:
+      - reload.nagisatosanae.github.io
+    resources:
+      - configreloadpolicies
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - reload.nagisatosanae.github.io
+    resources:
+      - configreloadpolicies/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - reload.nagisatosanae.github.io
+    resources:
+      - configreloadpolicies/status
+    verbs:
+      - get
+      - patch
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "config-reload-operator.fullname" . }}
+  labels:
+    {{- include "config-reload-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "config-reload-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "config-reload-operator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Leader election: the controller keeps a Lease in its own namespace and
+# writes an Event when the leader changes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "config-reload-operator.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "config-reload-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "config-reload-operator.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "config-reload-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "config-reload-operator.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "config-reload-operator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
