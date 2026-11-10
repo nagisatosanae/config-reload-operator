@@ -149,18 +149,28 @@ v1
 sed -e 's/Version v1;/Version v2;/' -e 's/"v1/"v2/' demo/nginx/k8s.yaml | kubectl apply -f -
 ```
 
-**5. Wait about a minute and look again.** The kubelet needs that long to
-bring the new files into the Pod.
+**5. Follow the watcher log.** The kubelet needs up to about a minute to
+bring the new files into the Pod. This command stays open and shows the
+lines when it happens.
 
 ```sh
-kubectl logs -n demo deploy/nginx-demo | grep -E "content changed|sending"
-kubectl exec -n demo deploy/nginx-demo -- wget -qO- http://127.0.0.1/
-kubectl get pods -n demo
+kubectl logs -f -n demo deploy/nginx-demo | grep -E "content changed|sending"
 ```
 
 ```text
 2026/11/10 07:02:05 6 events, content changed
 2026/11/10 07:02:05 sending SIGHUP
+```
+
+When you see these two lines, press `Ctrl+C`. Then look at the answer and
+the Pod.
+
+```sh
+kubectl exec -n demo deploy/nginx-demo -- wget -qO- http://127.0.0.1/
+kubectl get pods -n demo
+```
+
+```text
 v2
 ```
 
@@ -172,16 +182,24 @@ The answer is `v2`. The Pod name is the same and `RESTARTS` is still 0.
 sed -e 's/Version v1;/Version v2;/' -e 's/"v1/"v2/' -e 's/listen 80;/listen 80/' demo/nginx/k8s.yaml | kubectl apply -f -
 ```
 
-After about a minute the watcher log shows that the check failed. No signal
-is sent, and NGINX still answers `v2`.
+Follow the log again. After up to about a minute it shows that the check
+failed. Press `Ctrl+C` when you see the line.
 
 ```sh
-kubectl logs -n demo deploy/nginx-demo | grep "check failed"
-kubectl exec -n demo deploy/nginx-demo -- wget -qO- http://127.0.0.1/
+kubectl logs -f -n demo deploy/nginx-demo | grep "check failed"
 ```
 
 ```text
 2026/11/10 07:48:58 check failed, not reloading: nginx: exit status 1: ... directive "listen" is not terminated by ";" in /etc/nginx/conf.d/default.conf:3
+```
+
+No signal was sent, and NGINX still answers `v2`.
+
+```sh
+kubectl exec -n demo deploy/nginx-demo -- wget -qO- http://127.0.0.1/
+```
+
+```text
 v2
 ```
 
@@ -316,17 +334,11 @@ own, or for apps where a restart is cheap.
 - **Two policies for one container.** Today they overwrite each other. A
   rule where the older policy wins and the other one reports `Conflict` is
   designed and tested, but not merged.
-- **Watching Deployments.** If someone removes the settings by hand, the
-  controller puts them back only at its next full check, hours later. A
-  Deployment watch that reacts at once is designed and tested, but not
-  merged.
 - **Changing the target of a policy.** The settings stay on the old
   Deployment. They are removed only when the policy is deleted.
-- **End-to-end test in CI** on a kind cluster.
 - **Metrics and Kubernetes Events** for reloads and failed checks.
 - **More kinds of workloads and config**: StatefulSet, DaemonSet, Secrets,
   reload by HTTP call.
-- **No image build**: add the watcher to a Pod without building a new image.
 - **arm64 images**, and the Helm chart in a registry.
 - **Startup wait.** The watcher sends no signal in its first 5 seconds. This
   should be a setting.
