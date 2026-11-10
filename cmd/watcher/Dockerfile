@@ -4,7 +4,7 @@
 # meant to run by itself. Copy the binary into your app image, then make
 # it PID 1 and give it your app as the child command:
 #
-#   COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:main /watcher /usr/local/bin/watcher
+#   COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.1.0 /watcher /usr/local/bin/watcher
 #   ENTRYPOINT ["/usr/local/bin/watcher"]
 #   CMD ["--", "nginx", "-g", "daemon off;"]
 #
