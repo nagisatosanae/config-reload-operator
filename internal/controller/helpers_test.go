@@ -61,7 +61,7 @@ func TestFindWatchDir(t *testing.T) {
 		},
 		{
 			name:       "no such container",
-			container:  "sidecar",
+			container:  otherContainer,
 			wantIdx:    -1,
 			wantReason: reasonContainerNotFound,
 		},
@@ -118,16 +118,16 @@ func TestSyncEnv(t *testing.T) {
 		},
 		{
 			name:    "keeps other env where it is",
-			env:     []corev1.EnvVar{ev("TZ", "Asia/Seoul")},
+			env:     []corev1.EnvVar{ev("TZ", tz)},
 			want:    want,
-			out:     []corev1.EnvVar{ev("TZ", "Asia/Seoul"), ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")},
+			out:     []corev1.EnvVar{ev("TZ", tz), ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")},
 			changed: true,
 		},
 		{
 			name:    "fixes a wrong value in place and adds what is missing",
-			env:     []corev1.EnvVar{ev(envWatchDir, "/old"), ev("TZ", "Asia/Seoul")},
+			env:     []corev1.EnvVar{ev(envWatchDir, "/old"), ev("TZ", tz)},
 			want:    want,
-			out:     []corev1.EnvVar{ev(envWatchDir, "/d"), ev("TZ", "Asia/Seoul"), ev(envSignal, "SIGHUP")},
+			out:     []corev1.EnvVar{ev(envWatchDir, "/d"), ev("TZ", tz), ev(envSignal, "SIGHUP")},
 			changed: true,
 		},
 		{
@@ -148,15 +148,15 @@ func TestSyncEnv(t *testing.T) {
 		},
 		{
 			name:    "changes nothing when all is equal",
-			env:     []corev1.EnvVar{ev("TZ", "Asia/Seoul"), ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")},
+			env:     []corev1.EnvVar{ev("TZ", tz), ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")},
 			want:    want,
-			out:     []corev1.EnvVar{ev("TZ", "Asia/Seoul"), ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")},
+			out:     []corev1.EnvVar{ev("TZ", tz), ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")},
 			changed: false,
 		},
 		{
 			name:    "removes all of ours when nothing is wanted",
-			env:     []corev1.EnvVar{ev("TZ", "Asia/Seoul"), ev(envWatchDir, "/d")},
-			out:     []corev1.EnvVar{ev("TZ", "Asia/Seoul")},
+			env:     []corev1.EnvVar{ev("TZ", tz), ev(envWatchDir, "/d")},
+			out:     []corev1.EnvVar{ev("TZ", tz)},
 			changed: true,
 		},
 	}
@@ -192,14 +192,14 @@ func TestWatcherEnv(t *testing.T) {
 	// word survives the trip through one env string.
 	ten := int32(10)
 	pol.Spec.Reload = reloadv1alpha1.ReloadSpec{
-		Signal:          "SIGUSR1",
+		Signal:          sigUSR1,
 		DebounceSeconds: &ten,
 		ValidateCommand: []string{"sh", "-c", `echo "a b"`},
 	}
 	got = watcherEnv(&pol, "/d")
 	want = []corev1.EnvVar{
 		ev(envWatchDir, "/d"),
-		ev(envSignal, "SIGUSR1"),
+		ev(envSignal, sigUSR1),
 		ev(envDebounce, "10"),
 		ev(envValidate, `["sh","-c","echo \"a b\""]`),
 	}
