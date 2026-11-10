@@ -316,4 +316,47 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 			pol.Spec.WorkloadRef.Name = ""
 		}),
 	)
+
+	DescribeTable("does not let the target of a policy change",
+		func(change func(pol *reloadv1alpha1.ConfigReloadPolicy), field string) {
+			const name = "fixed"
+			policy := name + "-reload"
+			create(newDeployment(name))
+			create(newPolicy(policy, name))
+			_, err := runReconcile(policy)
+			Expect(err).NotTo(HaveOccurred())
+
+			pol := getPolicy(policy)
+			change(pol)
+			err = k8sClient.Update(ctx, pol)
+			Expect(err).To(MatchError(apierrors.IsInvalid, "an Invalid error"))
+			Expect(err.Error()).To(ContainSubstring(field + " cannot be changed"))
+
+			By("leaving the stored policy and the Deployment as they were")
+			stored := getPolicy(policy)
+			Expect(stored.Spec.WorkloadRef.Name).To(Equal(name))
+			Expect(stored.Spec.ContainerName).To(Equal(appContainer))
+			Expect(appEnv(getDeployment(name))).To(Equal(defaultEnv))
+		},
+		Entry("to another Deployment", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
+			pol.Spec.WorkloadRef.Name = "elsewhere"
+		}, "workloadRef"),
+		Entry("to another container", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
+			pol.Spec.ContainerName = otherContainer
+		}, "containerName"),
+	)
+
+	It("still lets the other fields of a policy change", func() {
+		const name = "free"
+		policy := name + "-reload"
+		create(newDeployment(name))
+		create(newPolicy(policy, name))
+		_, err := runReconcile(policy)
+		Expect(err).NotTo(HaveOccurred())
+
+		pol := getPolicy(policy)
+		pol.Spec.ConfigMapRef.Name = name + "-settings"
+		pol.Spec.Reload.Signal = sigUSR1
+		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
+	})
 })

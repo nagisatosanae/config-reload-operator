@@ -261,8 +261,8 @@ spec:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `spec.workloadRef.name` | required | The Deployment to reload. |
-| `spec.containerName` | required | The container that runs the watcher and the app. |
+| `spec.workloadRef.name` | required | The Deployment to reload. It cannot be changed later. |
+| `spec.containerName` | required | The container that runs the watcher and the app. It cannot be changed later. |
 | `spec.configMapRef.name` | required | The ConfigMap with the config files. It must be mounted in that container. |
 | `spec.reload.signal` | `SIGHUP` | `SIGHUP`, `SIGUSR1` or `SIGUSR2`. |
 | `spec.reload.debounceSeconds` | `3` | How long the files must stay quiet before the reload. 0 to 3600. |
@@ -303,7 +303,7 @@ downloads the two binaries the first time.
 | Part | Tests | What they cover |
 |---|---|---|
 | watcher | 19 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, cleaning up leftover child processes. |
-| controller | 17 envtest cases and 3 Go tests | Defaults and bad values at the API server, settings written once and not again, your own environment variables kept, every not-ready reason, clean-up when a policy is deleted. |
+| controller | 20 envtest cases and 3 Go tests | Defaults and bad values at the API server, settings written once and not again, your own environment variables kept, every not-ready reason, clean-up when a policy is deleted. |
 
 GitHub Actions runs the tests and the linter on every push.
 

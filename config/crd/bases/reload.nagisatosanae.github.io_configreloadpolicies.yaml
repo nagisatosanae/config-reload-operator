@@ -69,11 +69,16 @@ spec:
                 - name
                 type: object
               containerName:
-                description: containerName is the container that runs the watcher
-                  and the app.
+                description: |-
+                  containerName is the container that runs the watcher and the app. It
+                  cannot be changed after the policy is created, for the same reason.
                 maxLength: 63
                 minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: containerName cannot be changed. Delete the policy and
+                    create a new one.
+                  rule: self == oldSelf
               reload:
                 default: {}
                 description: |-
@@ -113,7 +118,11 @@ spec:
                     x-kubernetes-list-type: atomic
                 type: object
               workloadRef:
-                description: workloadRef is the workload to reload.
+                description: |-
+                  workloadRef is the workload to reload. It cannot be changed after the
+                  policy is created, because the watcher settings would stay on the old
+                  workload. To point at another workload, delete the policy and create a
+                  new one.
                 properties:
                   kind:
                     default: Deployment
@@ -132,6 +141,10 @@ spec:
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: workloadRef cannot be changed. Delete the policy and create
+                    a new one.
+                  rule: self == oldSelf
             required:
             - configMapRef
             - containerName

@@ -81,13 +81,19 @@ type ReloadSpec struct {
 
 // ConfigReloadPolicySpec defines the desired state of ConfigReloadPolicy.
 type ConfigReloadPolicySpec struct {
-	// workloadRef is the workload to reload.
+	// workloadRef is the workload to reload. It cannot be changed after the
+	// policy is created, because the watcher settings would stay on the old
+	// workload. To point at another workload, delete the policy and create a
+	// new one.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="workloadRef cannot be changed. Delete the policy and create a new one."
 	// +required
 	WorkloadRef WorkloadRef `json:"workloadRef"`
 
-	// containerName is the container that runs the watcher and the app.
+	// containerName is the container that runs the watcher and the app. It
+	// cannot be changed after the policy is created, for the same reason.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="containerName cannot be changed. Delete the policy and create a new one."
 	// +required
 	ContainerName string `json:"containerName"`
 
