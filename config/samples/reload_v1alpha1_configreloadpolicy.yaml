@@ -12,3 +12,5 @@ spec:
   containerName: nginx
   configMapRef:
     name: nginx-config
+  reload:
+    validateCommand: ["nginx", "-t"]

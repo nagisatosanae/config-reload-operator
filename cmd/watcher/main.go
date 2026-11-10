@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -19,13 +22,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// container. When it is empty, the watcher only runs the app.
 // The controller sets these on the container. When WATCH_DIR is empty, the
 // watcher only runs the app.
 const (
 	envWatchDir = "WATCH_DIR"
 	envSignal   = "WATCH_SIGNAL"
 	envDebounce = "WATCH_DEBOUNCE_SECONDS"
+	envValidate = "WATCH_VALIDATE_COMMAND"
 )
 
 const (
@@ -38,6 +41,9 @@ const (
 	// signal. Until the app is up, the child may still be a start script,
 	// and a signal would kill it.
 	startupGrace = 5 * time.Second
+
+	// validateTimeout is how long the check command may run.
+	validateTimeout = 10 * time.Second
 )
 
 func main() {
@@ -68,17 +74,28 @@ func main() {
 	}()
 
 	// 3. Watch the config directory, if we were told which one.
-	// 3. Watch the config directory, if we were told which one.
 	if dir := os.Getenv(envWatchDir); dir != "" {
 		sig := signalFromEnv()
 		quiet := quietFromEnv()
-		log.Printf("watching %s (signal %s, quiet time %s)", dir, unix.SignalName(sig), quiet)
-		go watch(dir, quiet, startupGrace, func() {
+		command, commandErr := validateCommandFromEnv()
+		if commandErr != nil {
+			log.Printf("config will not be reloaded until this is fixed: %v", commandErr)
+		}
+		log.Printf("watching %s (signal %s, quiet time %s, check %q)", dir, unix.SignalName(sig), quiet, command)
+
+		check := func() error {
+			if commandErr != nil {
+				return commandErr
+			}
+			return validate(command, validateTimeout)
+		}
+		reload := func() {
 			log.Printf("sending %s", unix.SignalName(sig))
 			if err := cmd.Process.Signal(sig); err != nil {
 				log.Printf("could not send %s: %v", unix.SignalName(sig), err)
 			}
-		})
+		}
+		go watch(dir, quiet, startupGrace, check, reload)
 	} else {
 		log.Printf("%s is not set, so config changes are not watched", envWatchDir)
 	}
@@ -128,14 +145,49 @@ func quietFromEnv() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// watch calls reload when the content of the files in dir has changed.
+// validateCommandFromEnv returns the check command from
+// WATCH_VALIDATE_COMMAND. The value is a JSON list of words, for example
+// ["nginx","-t"]. An empty value means there is no check.
+func validateCommandFromEnv() ([]string, error) {
+	value := os.Getenv(envValidate)
+	if value == "" {
+		return nil, nil
+	}
+	var command []string
+	if err := json.Unmarshal([]byte(value), &command); err != nil {
+		return nil, fmt.Errorf("cannot read %s %q: %w", envValidate, value, err)
+	}
+	return command, nil
+}
+
+// validate runs the check command and returns nil when the new config may
+// be used. With no command there is nothing to check.
+func validate(command []string, timeout time.Duration) error {
+	if len(command) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, command[0], command[1:]...).CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%s did not finish in %s", command[0], timeout)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w: %s", command[0], err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// watch calls reload when the content of the files in dir has changed and
+// check says the new content is good.
 //
 // The kernel tells us when something happens in dir, so there is no polling.
 // Events only start a timer. When dir has been quiet for the quiet time, we
-// compare the content with what we saw last, and call reload only if it is
+// compare the content with what the app is running, and go on only if it is
 // different. Nothing is reloaded before the grace time has passed; a change
 // seen earlier is kept and handled right after it.
-func watch(dir string, quiet, grace time.Duration, reload func()) {
+func watch(dir string, quiet, grace time.Duration, check func() error, reload func()) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Printf("cannot start watching: %v", err)
@@ -149,7 +201,9 @@ func watch(dir string, quiet, grace time.Duration, reload func()) {
 	}
 
 	started := time.Now()
-	last := hashDir(dir)
+	// running is the hash of the config the app is running. It only moves
+	// forward when a reload was really sent.
+	running := hashDir(dir)
 	events := 0
 
 	timer := time.NewTimer(time.Hour)
@@ -178,14 +232,19 @@ func watch(dir string, quiet, grace time.Duration, reload func()) {
 			}
 
 			h := hashDir(dir)
-			if h == last {
+			if h == running {
 				log.Printf("%d events, content is the same", events)
 				events = 0
 				continue
 			}
 			log.Printf("%d events, content changed", events)
-			last = h
 			events = 0
+
+			if err := check(); err != nil {
+				log.Printf("check failed, not reloading: %v", err)
+				continue
+			}
+			running = h
 			reload()
 		}
 	}

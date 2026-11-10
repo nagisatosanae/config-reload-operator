@@ -96,6 +96,18 @@ spec:
                     - SIGUSR1
                     - SIGUSR2
                     type: string
+                  validateCommand:
+                    description: |-
+                      validateCommand is a command that checks the new config before the
+                      signal is sent, for example ["nginx", "-t"]. It runs inside the
+                      container, without a shell. If it exits with a non-zero code, the
+                      signal is not sent and the app keeps its current config. Leave it out
+                      to skip the check.
+                    items:
+                      type: string
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: atomic
                 type: object
               workloadRef:
                 description: workloadRef is the workload to reload.

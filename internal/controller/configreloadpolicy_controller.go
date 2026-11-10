@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -50,11 +51,17 @@ const (
 	envWatchDir = "WATCH_DIR"
 	envSignal   = "WATCH_SIGNAL"
 	envDebounce = "WATCH_DEBOUNCE_SECONDS"
+	envValidate = "WATCH_VALIDATE_COMMAND"
 
 	// retryAfter is how long to wait before looking again when something
 	// the policy points at is missing or wrong.
 	retryAfter = 30 * time.Second
 )
+
+// ownedEnv lists the env names this controller owns on the container. It
+// sets them, and it removes the ones the policy no longer asks for. It
+// never touches any other env.
+var ownedEnv = []string{envWatchDir, envSignal, envDebounce, envValidate}
 
 // Reasons shown in the Ready condition.
 const (
@@ -108,17 +115,14 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// 4. Tell the watcher what to do through env on the container, but only
 	// write when something is not right yet.
 	container := &dep.Spec.Template.Spec.Containers[idx]
-	want := watcherEnv(&policy, watchDir)
-	if !hasAllEnv(container.Env, want) {
+	env, changed := syncEnv(container.Env, watcherEnv(&policy, watchDir))
+	if changed {
 		before := dep.DeepCopy()
-		for _, e := range want {
-			container.Env = setEnv(container.Env, e.Name, e.Value)
-		}
+		container.Env = env
 		if err := r.Patch(ctx, &dep, client.StrategicMergeFrom(before)); err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("configured watcher", "deployment", dep.Name, "container", container.Name,
-			"dir", watchDir, "signal", want[1].Value, "debounceSeconds", want[2].Value)
+		log.Info("configured watcher", "deployment", dep.Name, "container", container.Name, "dir", watchDir)
 	}
 
 	// 5. Report success.
@@ -166,8 +170,7 @@ func findWatchDir(dep *appsv1.Deployment, containerName, configMapName string) (
 		fmt.Sprintf("container %q does not mount ConfigMap %q", containerName, configMapName)
 }
 
-// watcherEnv returns the env the watcher needs for this policy: the
-// directory, the signal and the quiet time, in that order.
+// watcherEnv returns the env the watcher needs for this policy.
 func watcherEnv(policy *reloadv1alpha1.ConfigReloadPolicy, watchDir string) []corev1.EnvVar {
 	// The API server fills in the defaults. These are only a safety net.
 	signal := policy.Spec.Reload.Signal
@@ -179,44 +182,64 @@ func watcherEnv(policy *reloadv1alpha1.ConfigReloadPolicy, watchDir string) []co
 		debounce = *policy.Spec.Reload.DebounceSeconds
 	}
 
-	return []corev1.EnvVar{
+	env := []corev1.EnvVar{
 		{Name: envWatchDir, Value: watchDir},
 		{Name: envSignal, Value: signal},
 		{Name: envDebounce, Value: strconv.Itoa(int(debounce))},
 	}
+
+	// The check command is a list of words. Env can only hold one string,
+	// so it travels as JSON, for example ["nginx","-t"].
+	if command := policy.Spec.Reload.ValidateCommand; len(command) > 0 {
+		// A list of strings always turns into JSON, so the error is ignored.
+		encoded, _ := json.Marshal(command)
+		env = append(env, corev1.EnvVar{Name: envValidate, Value: string(encoded)})
+	}
+	return env
 }
 
-// hasAllEnv reports whether every wanted entry is already set.
-func hasAllEnv(env, want []corev1.EnvVar) bool {
+// syncEnv returns env with the watcher entries made equal to want: wanted
+// entries are set, and owned entries that are not wanted are removed. Every
+// other entry stays as it is. The second result says if anything changed.
+// The input is not modified.
+func syncEnv(env, want []corev1.EnvVar) ([]corev1.EnvVar, bool) {
+	wanted := map[string]string{}
 	for _, w := range want {
-		if !hasEnv(env, w.Name, w.Value) {
-			return false
-		}
+		wanted[w.Name] = w.Value
 	}
-	return true
-}
+	owned := map[string]bool{}
+	for _, name := range ownedEnv {
+		owned[name] = true
+	}
 
-// hasEnv reports whether the list already has name set to value.
-func hasEnv(env []corev1.EnvVar, name, value string) bool {
+	out := make([]corev1.EnvVar, 0, len(env)+len(want))
+	done := map[string]bool{}
+	changed := false
+
 	for _, e := range env {
-		if e.Name == name {
-			return e.Value == value && e.ValueFrom == nil
+		if !owned[e.Name] {
+			out = append(out, e) // not ours: keep as is
+			continue
 		}
+		value, ok := wanted[e.Name]
+		if !ok {
+			changed = true // ours, but no longer wanted: drop it
+			continue
+		}
+		if e.Value != value || e.ValueFrom != nil {
+			changed = true
+		}
+		out = append(out, corev1.EnvVar{Name: e.Name, Value: value})
+		done[e.Name] = true
 	}
-	return false
-}
 
-// setEnv returns the list with name set to value. It adds the entry if it
-// is not there yet.
-func setEnv(env []corev1.EnvVar, name, value string) []corev1.EnvVar {
-	for i := range env {
-		if env[i].Name == name {
-			env[i].Value = value
-			env[i].ValueFrom = nil
-			return env
+	for _, w := range want {
+		if !done[w.Name] {
+			out = append(out, w) // wanted, but not there yet: add it
+			changed = true
 		}
 	}
-	return append(env, corev1.EnvVar{Name: name, Value: value})
+	return out, changed
 }
 
 // setReady writes the Ready condition, but only when it really changes.

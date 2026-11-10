@@ -66,6 +66,16 @@ type ReloadSpec struct {
 	// +kubebuilder:default=3
 	// +optional
 	DebounceSeconds *int32 `json:"debounceSeconds,omitempty"`
+
+	// validateCommand is a command that checks the new config before the
+	// signal is sent, for example ["nginx", "-t"]. It runs inside the
+	// container, without a shell. If it exits with a non-zero code, the
+	// signal is not sent and the app keeps its current config. Leave it out
+	// to skip the check.
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=atomic
+	// +optional
+	ValidateCommand []string `json:"validateCommand,omitempty"`
 }
 
 // ConfigReloadPolicySpec defines the desired state of ConfigReloadPolicy.
