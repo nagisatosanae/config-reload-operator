@@ -74,15 +74,11 @@ func main() {
 	exited := make(chan syscall.WaitStatus, 1)
 	go reap(sigchld, cmd.Process.Pid, exited)
 
-	// 3. Forward termination signals to the child.
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT)
-	go func() {
-		for s := range sigs {
-			log.Printf("got %v, forwarding to child", s)
-			_ = cmd.Process.Signal(s)
-		}
-	}()
+	// 3. Pass signals on to the child: the ones that stop it, and the ones
+	// people send to PID 1 by hand, like "kill -HUP 1" for a reload.
+	sigs := make(chan os.Signal, len(forwarded))
+	signal.Notify(sigs, forwarded...)
+	go forward(sigs, cmd.Process)
 
 	// 4. Watch the config directory, if we were told which one.
 	if dir := os.Getenv(envWatchDir); dir != "" {
@@ -125,6 +121,26 @@ func main() {
 	}
 	log.Printf("child exited with code %d", code)
 	os.Exit(code)
+}
+
+// forwarded lists the signals the watcher passes on to the app: the ones
+// that stop it, and the ones apps use for a reload or to open their logs
+// again. They must be named here. Go ends the program on a SIGHUP that
+// nobody asked for, so without this a "kill -HUP 1" would stop the whole
+// container.
+var forwarded = []os.Signal{
+	syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT,
+	syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2,
+}
+
+// forward sends every signal that arrives on sigs to the app. A reload
+// signal that comes this way goes straight to the app, without the check
+// command.
+func forward(sigs <-chan os.Signal, app *os.Process) {
+	for s := range sigs {
+		log.Printf("got %v, forwarding to child", s)
+		_ = app.Signal(s)
+	}
 }
 
 // reapMu keeps reap away from a child that Go waits for itself, like the

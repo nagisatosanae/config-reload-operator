@@ -9,11 +9,6 @@
 Reload an app's config with a signal when its ConfigMap changes. The Pod is
 not replaced.
 
-![Demo: NGINX goes from v1 to v2 in the same Pod](docs/demo.gif)
-
-This is quick start steps 3 to 5 on a local cluster. The GIF is drawn from
-the output of a real run. The wait for the kubelet is cut out.
-
 ## Background
 
 Many apps do not notice when their config files change. But they read the
@@ -94,14 +89,10 @@ Pod UID and the restart count did not change.
 You need a Kubernetes cluster (kind, minikube or Docker Desktop), `kubectl`
 and Helm 3 or newer.
 
-**No cluster? Use GitHub Codespaces.** It opens this repository in your
-browser with a kind cluster, `kubectl` and Helm ready. You need a GitHub
-account, and the first start takes a few minutes. In a codespace, skip the
-`git clone` lines below and start at step 1.
+![Demo: NGINX goes from v1 to v2 in the same Pod](docs/demo.gif)
 
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/nagisatosanae/config-reload-operator)
-
-On your own machine, get the code first.
+The GIF shows steps 3 to 5 below. It is drawn from the output of a real run,
+and the wait for the kubelet is cut out.
 
 ```sh
 git clone https://github.com/nagisatosanae/config-reload-operator.git
@@ -217,8 +208,8 @@ kubectl delete -f demo/nginx/k8s.yaml
 helm uninstall config-reload-operator --namespace config-reload-operator-system
 ```
 
-**Start again.** After the clean-up you can go back to step 1. In a
-codespace you can also throw the cluster away and make a new one. That takes
+**Start again.** After the clean-up you can go back to step 1. On a kind
+cluster you can also throw the cluster away and make a new one. That takes
 about a minute.
 
 ```sh
@@ -237,7 +228,7 @@ entrypoint and give it your app as the command after `--`.
 
 ```dockerfile
 FROM nginx:stable-alpine
-COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.1.0 /watcher /usr/local/bin/watcher
+COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.1.1 /watcher /usr/local/bin/watcher
 ENTRYPOINT ["/usr/local/bin/watcher"]
 CMD ["--", "/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
 ```
@@ -311,7 +302,7 @@ downloads the two binaries the first time.
 
 | Part | Tests | What they cover |
 |---|---|---|
-| watcher | 18 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, cleaning up leftover child processes. |
+| watcher | 19 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, cleaning up leftover child processes. |
 | controller | 17 envtest cases and 3 Go tests | Defaults and bad values at the API server, settings written once and not again, your own environment variables kept, every not-ready reason, clean-up when a policy is deleted. |
 
 GitHub Actions runs the tests and the linter on every push.

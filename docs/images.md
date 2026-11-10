@@ -23,8 +23,8 @@ moves with every release.
 To release:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 ## Put the watcher in your own image
@@ -34,7 +34,7 @@ your app as the child command after `--`:
 
 ```dockerfile
 FROM nginx:stable-alpine
-COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.1.0 /watcher /usr/local/bin/watcher
+COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.1.1 /watcher /usr/local/bin/watcher
 ENTRYPOINT ["/usr/local/bin/watcher"]
 CMD ["--", "/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
 ```

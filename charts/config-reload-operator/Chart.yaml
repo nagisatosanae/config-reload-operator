@@ -4,10 +4,10 @@ description: Reloads an app by signal when its ConfigMap changes, without replac
 type: application
 
 # Version of the chart.
-version: 0.1.0
+version: 0.1.1
 
 # Version of the controller. It is also the default image tag.
-appVersion: "0.1.0"
+appVersion: "0.1.1"
 
 home: https://github.com/nagisatosanae/config-reload-operator
 sources:
