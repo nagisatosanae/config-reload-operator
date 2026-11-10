@@ -127,6 +127,7 @@ type ConfigReloadPolicyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=crp
 // +kubebuilder:printcolumn:name="Workload",type=string,JSONPath=`.spec.workloadRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`

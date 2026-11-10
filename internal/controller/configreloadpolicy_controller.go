@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"time"
 
+	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,9 +33,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
-	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
 )
 
 // ConfigReloadPolicyReconciler reconciles a ConfigReloadPolicy object
@@ -56,6 +56,9 @@ const (
 	// retryAfter is how long to wait before looking again when something
 	// the policy points at is missing or wrong.
 	retryAfter = 30 * time.Second
+	// finalizer marks a policy whose Deployment carries our env. The env is
+	// taken off again before the policy is allowed to go.
+	finalizer = "reload.nagisatosanae.github.io/revert"
 )
 
 // ownedEnv lists the env names this controller owns on the container. It
@@ -83,7 +86,7 @@ const (
 // mounts the ConfigMap, and sets env on the container so the watcher knows
 // which directory to watch, which signal to send and how long to wait. It
 // writes nothing when everything is already right, so it is safe to run
-// again and again.
+// again and again. When the policy is deleted, the env is taken off again.
 func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -93,7 +96,13 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// 2. Read the Deployment the policy points at.
+	// 2. A policy on its way out takes its env off the container first.
+	// Then the finalizer is removed and the policy is let go.
+	if !policy.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.finish(ctx, &policy)
+	}
+
+	// 3. Read the Deployment the policy points at.
 	var dep appsv1.Deployment
 	depKey := types.NamespacedName{Namespace: policy.Namespace, Name: policy.Spec.WorkloadRef.Name}
 	if err := r.Get(ctx, depKey, &dep); err != nil {
@@ -105,14 +114,22 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 			r.setReady(ctx, &policy, metav1.ConditionFalse, reasonWorkloadNotFound, msg)
 	}
 
-	// 3. Find the container and the directory where it mounts the ConfigMap.
+	// 4. Find the container and the directory where it mounts the ConfigMap.
 	idx, watchDir, reason, msg := findWatchDir(&dep, policy.Spec.ContainerName, policy.Spec.ConfigMapRef.Name)
 	if reason != "" {
 		return ctrl.Result{RequeueAfter: retryAfter},
 			r.setReady(ctx, &policy, metav1.ConditionFalse, reason, msg)
 	}
 
-	// 4. Tell the watcher what to do through env on the container, but only
+	// 5. From here on the Deployment carries our env. Make sure the policy
+	// cannot go away without taking it off again.
+	if controllerutil.AddFinalizer(&policy, finalizer) {
+		if err := r.Update(ctx, &policy); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// 6. Tell the watcher what to do through env on the container, but only
 	// write when something is not right yet.
 	container := &dep.Spec.Template.Spec.Containers[idx]
 	env, changed := syncEnv(container.Env, watcherEnv(&policy, watchDir))
@@ -125,9 +142,59 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 		log.Info("configured watcher", "deployment", dep.Name, "container", container.Name, "dir", watchDir)
 	}
 
-	// 5. Report success.
+	// 7. Report success.
 	msg = fmt.Sprintf("container %q watches %s", container.Name, watchDir)
 	return ctrl.Result{}, r.setReady(ctx, &policy, metav1.ConditionTrue, reasonConfigured, msg)
+}
+
+// finish runs when the policy is being deleted. It takes the watcher env
+// off the container and then removes the finalizer so the policy can go.
+func (r *ConfigReloadPolicyReconciler) finish(ctx context.Context, policy *reloadv1alpha1.ConfigReloadPolicy) error {
+	if !controllerutil.ContainsFinalizer(policy, finalizer) {
+		return nil
+	}
+	if err := r.revert(ctx, policy); err != nil {
+		return err
+	}
+	controllerutil.RemoveFinalizer(policy, finalizer)
+	return r.Update(ctx, policy)
+}
+
+// revert takes the watcher env off the container the policy points at. A
+// Deployment or container that is already gone needs nothing.
+func (r *ConfigReloadPolicyReconciler) revert(ctx context.Context, policy *reloadv1alpha1.ConfigReloadPolicy) error {
+	var dep appsv1.Deployment
+	depKey := types.NamespacedName{Namespace: policy.Namespace, Name: policy.Spec.WorkloadRef.Name}
+	if err := r.Get(ctx, depKey, &dep); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	idx := containerIndex(&dep.Spec.Template.Spec, policy.Spec.ContainerName)
+	if idx < 0 {
+		return nil
+	}
+
+	container := &dep.Spec.Template.Spec.Containers[idx]
+	env, changed := syncEnv(container.Env, nil)
+	if !changed {
+		return nil
+	}
+	before := dep.DeepCopy()
+	container.Env = env
+	if err := r.Patch(ctx, &dep, client.StrategicMergeFrom(before)); err != nil {
+		return err
+	}
+	logf.FromContext(ctx).Info("removed watcher env", "deployment", dep.Name, "container", container.Name)
+	return nil
+}
+
+// containerIndex returns the position of the named container, or -1.
+func containerIndex(podSpec *corev1.PodSpec, name string) int {
+	for i := range podSpec.Containers {
+		if podSpec.Containers[i].Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // findWatchDir looks for the named container and for the directory where it
@@ -136,13 +203,7 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 func findWatchDir(dep *appsv1.Deployment, containerName, configMapName string) (idx int, dir, reason, msg string) {
 	podSpec := &dep.Spec.Template.Spec
 
-	idx = -1
-	for i := range podSpec.Containers {
-		if podSpec.Containers[i].Name == containerName {
-			idx = i
-			break
-		}
-	}
+	idx = containerIndex(podSpec, containerName)
 	if idx < 0 {
 		return -1, "", reasonContainerNotFound,
 			fmt.Sprintf("Deployment %q has no container named %q", dep.Name, containerName)

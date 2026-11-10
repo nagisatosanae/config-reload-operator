@@ -40,9 +40,13 @@ import (
 // Deployment, but no Pod is ever started.
 
 const (
-	testNamespace = "default"
-	appContainer  = "nginx"
-	mountPath     = "/etc/nginx/conf.d"
+	testNamespace  = "default"
+	appContainer   = "nginx"
+	otherContainer = "sidecar"
+	mountPath      = "/etc/nginx/conf.d"
+	tz             = "Asia/Seoul"
+	sigUSR1        = "SIGUSR1"
+	sigUSR2        = "SIGUSR2"
 )
 
 // newDeployment returns a Deployment like the demo: a helper container
@@ -98,6 +102,11 @@ func create(obj client.Object) {
 	Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 	DeferCleanup(func() {
 		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, obj))).To(Succeed())
+		if pol, ok := obj.(*reloadv1alpha1.ConfigReloadPolicy); ok {
+			// The finalizer holds the policy until Reconcile has cleaned up.
+			_, err := runReconcile(pol.Name)
+			Expect(err).NotTo(HaveOccurred())
+		}
 	})
 }
 
@@ -154,7 +163,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 
 	It("sets the watcher env on the named container and reports Ready", func() {
 		userEnv := []corev1.EnvVar{
-			{Name: "TZ", Value: "Asia/Seoul"},
+			{Name: "TZ", Value: tz},
 			{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.name"},
 			}},
@@ -210,7 +219,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		By("asking for another signal, a longer quiet time and a check command")
 		pol := getPolicy("change-reload")
 		ten := int32(10)
-		pol.Spec.Reload.Signal = "SIGUSR2"
+		pol.Spec.Reload.Signal = sigUSR2
 		pol.Spec.Reload.DebounceSeconds = &ten
 		pol.Spec.Reload.ValidateCommand = []string{"nginx", "-t"}
 		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
@@ -218,7 +227,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		changed := []corev1.EnvVar{
 			{Name: envWatchDir, Value: mountPath},
-			{Name: envSignal, Value: "SIGUSR2"},
+			{Name: envSignal, Value: sigUSR2},
 			{Name: envDebounce, Value: "10"},
 			{Name: envValidate, Value: `["nginx","-t"]`},
 		}
@@ -261,7 +270,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 			}, reasonWorkloadNotFound),
 		Entry("the container is not there", "nocontainer",
 			func(_ *appsv1.Deployment, pol *reloadv1alpha1.ConfigReloadPolicy) {
-				pol.Spec.ContainerName = "sidecar"
+				pol.Spec.ContainerName = otherContainer
 			}, reasonContainerNotFound),
 		Entry("the ConfigMap is not mounted", "nomount",
 			func(dep *appsv1.Deployment, _ *reloadv1alpha1.ConfigReloadPolicy) {

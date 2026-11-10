@@ -11,6 +11,8 @@ spec:
     kind: ConfigReloadPolicy
     listKind: ConfigReloadPolicyList
     plural: configreloadpolicies
+    shortNames:
+    - crp
     singular: configreloadpolicy
   scope: Namespaced
   versions:
