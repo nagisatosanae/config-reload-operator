@@ -89,6 +89,15 @@ Pod UID and the restart count did not change.
 You need a Kubernetes cluster (kind, minikube or Docker Desktop), `kubectl`
 and Helm 3 or newer.
 
+**No cluster? Use GitHub Codespaces.** It opens this repository in your
+browser with a kind cluster, `kubectl` and Helm ready. You need a GitHub
+account, and the first start takes a few minutes. In a codespace, skip the
+`git clone` lines below and start at step 1.
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/nagisatosanae/config-reload-operator)
+
+On your own machine, get the code first.
+
 ```sh
 git clone https://github.com/nagisatosanae/config-reload-operator.git
 cd config-reload-operator
@@ -97,9 +106,12 @@ cd config-reload-operator
 **1. Install the controller.**
 
 ```sh
-helm install config-reload-operator ./charts/config-reload-operator \
+helm upgrade --install config-reload-operator ./charts/config-reload-operator \
   --namespace config-reload-operator-system --create-namespace
 ```
+
+`upgrade --install` installs the chart, or updates it when it is already
+there. So this step is safe to run again.
 
 **2. Start the demo app and add a policy.** The demo is NGINX with the
 watcher in its image. Its config comes from the ConfigMap `nginx-config`.
@@ -182,7 +194,20 @@ kubectl delete -f demo/nginx/k8s.yaml
 helm uninstall config-reload-operator --namespace config-reload-operator-system
 ```
 
+**Start again.** After the clean-up you can go back to step 1. In a
+codespace you can also throw the cluster away and make a new one. That takes
+about a minute.
+
+```sh
+kind delete cluster && kind create cluster
+```
+
 ## Use it with your own app
+
+The steps below use NGINX as the example. NGINX does not read its config
+again by itself when the file changes. Something has to send it a signal.
+These steps make the watcher do that. Any other app that reloads on a signal
+works the same way.
 
 **1. Put the watcher in your image.** It is one static binary. Make it the
 entrypoint and give it your app as the command after `--`.

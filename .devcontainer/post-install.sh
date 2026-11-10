@@ -156,6 +156,21 @@ fi
 
 echo ""
 echo "------------------------------------"
+echo "Creating a kind cluster..."
+echo "------------------------------------"
+
+# Create a cluster so the README quick start can begin at step 1.
+# A failure here must not stop the setup: the cluster can be made by hand.
+if kind get clusters 2>/dev/null | grep -qx "kind"; then
+  echo "kind cluster already exists"
+elif kind create cluster; then
+  echo "kind cluster created"
+else
+  echo "WARNING: Could not create the kind cluster. Run 'kind create cluster' by hand."
+fi
+
+echo ""
+echo "------------------------------------"
 echo "Verifying installations..."
 echo "------------------------------------"
 kind version
@@ -170,4 +185,4 @@ echo "===================================="
 echo "DevContainer ready!"
 echo "===================================="
 echo "All development tools installed successfully."
-echo "You can now start building Kubernetes operators."
+echo "Next: kubectl get nodes, then the quick start in README.md."
