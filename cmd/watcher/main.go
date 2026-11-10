@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -56,6 +57,10 @@ func main() {
 	}
 
 	// 1. Run the application as a child process, sharing stdin/stdout/stderr.
+	// We ask for SIGCHLD before the start, so the end of a child is never
+	// missed.
+	sigchld := make(chan os.Signal, 1)
+	signal.Notify(sigchld, syscall.SIGCHLD)
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -63,7 +68,13 @@ func main() {
 	}
 	log.Printf("watcher pid=%d started child pid=%d", os.Getpid(), cmd.Process.Pid)
 
-	// 2. Forward termination signals to the child.
+	// 2. Collect every child that ends. This is the job of PID 1: without
+	// it, an orphan that ends stays as a zombie. The end of the app itself
+	// comes back on exited.
+	exited := make(chan syscall.WaitStatus, 1)
+	go reap(sigchld, cmd.Process.Pid, exited)
+
+	// 3. Forward termination signals to the child.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT)
 	go func() {
@@ -73,15 +84,20 @@ func main() {
 		}
 	}()
 
-	// 3. Watch the config directory, if we were told which one.
+	// 4. Watch the config directory, if we were told which one.
 	if dir := os.Getenv(envWatchDir); dir != "" {
 		sig := signalFromEnv()
 		quiet := quietFromEnv()
 		command, commandErr := validateCommandFromEnv()
-		if commandErr != nil {
+		log.Printf("watching %s (signal %s, quiet time %s)", dir, unix.SignalName(sig), quiet)
+		switch {
+		case commandErr != nil:
 			log.Printf("config will not be reloaded until this is fixed: %v", commandErr)
+		case len(command) == 0:
+			log.Printf("%s is not set, so a new config is reloaded without a check", envValidate)
+		default:
+			log.Printf("a new config is checked with %q before the reload", command)
 		}
-		log.Printf("watching %s (signal %s, quiet time %s, check %q)", dir, unix.SignalName(sig), quiet, command)
 
 		check := func() error {
 			if commandErr != nil {
@@ -100,19 +116,44 @@ func main() {
 		log.Printf("%s is not set, so config changes are not watched", envWatchDir)
 	}
 
-	// 4. Exit with the child's exit code (128+N if it died from a signal).
-	err := cmd.Wait()
-	code := 0
-	if ee, ok := err.(*exec.ExitError); ok {
-		code = ee.ExitCode()
-		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			code = 128 + int(ws.Signal())
-		}
-	} else if err != nil {
-		code = 1
+	// 5. Wait for the app to end, and exit with its code (128+N if it died
+	// from a signal).
+	status := <-exited
+	code := status.ExitStatus()
+	if status.Signaled() {
+		code = 128 + int(status.Signal())
 	}
 	log.Printf("child exited with code %d", code)
 	os.Exit(code)
+}
+
+// reapMu keeps reap away from a child that Go waits for itself, like the
+// check command. Both of them wait, and only one can get the exit code.
+var reapMu sync.Mutex
+
+// reap collects every child that has ended. As PID 1 we are the parent of
+// every orphan in the container, and an ended process that nobody collects
+// stays as a zombie. When the app itself ends, its status is sent on exited.
+func reap(sigchld <-chan os.Signal, app int, exited chan<- syscall.WaitStatus) {
+	for range sigchld {
+		reapMu.Lock()
+		for {
+			var status syscall.WaitStatus
+			pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
+			if err == syscall.EINTR {
+				continue
+			}
+			if pid <= 0 || err != nil {
+				break // 0: nothing has ended yet. ECHILD: there is no child at all.
+			}
+			if pid == app {
+				exited <- status
+				continue
+			}
+			log.Printf("collected orphan pid=%d", pid)
+		}
+		reapMu.Unlock()
+	}
 }
 
 // signalFromEnv returns the signal named in WATCH_SIGNAL. It returns SIGHUP
@@ -169,7 +210,17 @@ func validate(command []string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, command[0], command[1:]...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	// If the command leaves a process behind that keeps our output pipe
+	// open, stop waiting for the output after a moment.
+	cmd.WaitDelay = time.Second
+
+	// Go waits for this child itself, so reap must stay away from it.
+	reapMu.Lock()
+	defer reapMu.Unlock()
+
+	out, err := cmd.CombinedOutput()
+
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("%s did not finish in %s", command[0], timeout)
 	}

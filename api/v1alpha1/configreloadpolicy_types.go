@@ -72,6 +72,7 @@ type ReloadSpec struct {
 	// container, without a shell. If it exits with a non-zero code, the
 	// signal is not sent and the app keeps its current config. Leave it out
 	// to skip the check.
+	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:MaxItems=32
 	// +listType=atomic
 	// +optional

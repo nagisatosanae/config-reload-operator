@@ -104,6 +104,7 @@ spec:
                       signal is not sent and the app keeps its current config. Leave it out
                       to skip the check.
                     items:
+                      minLength: 1
                       type: string
                     maxItems: 32
                     type: array
