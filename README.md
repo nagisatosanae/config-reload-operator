@@ -332,11 +332,8 @@ start above. An end-to-end test on a kind cluster is the next thing to add.
 - Creating, changing or deleting a policy replaces the Pod one time, because
   the settings are environment variables. Config changes after that do not
   replace it.
-- The policy, the Deployment and the ConfigMap must be in the same namespace.
-- The app must have a reload signal that its documentation describes.
 - The watcher is PID 1. If it crashes, the container stops. That is why it
   is small and well tested.
-- Images are built for linux/amd64 only.
 
 You do not need this project for apps that read their config again on their
 own, or for apps where a restart is cheap.
@@ -346,14 +343,9 @@ own, or for apps where a restart is cheap.
 - **Two policies for one container.** Today they overwrite each other. A
   rule where the older policy wins and the other one reports `Conflict` is
   designed and tested, but not merged.
-- **Changing the target of a policy.** The settings stay on the old
-  Deployment. They are removed only when the policy is deleted.
 - **Metrics and Kubernetes Events** for reloads and failed checks.
 - **More kinds of workloads and config**: StatefulSet, DaemonSet, Secrets,
   reload by HTTP call.
-- **arm64 images**, and the Helm chart in a registry.
-- **Startup wait.** The watcher sends no signal in its first 5 seconds. This
-  should be a setting.
 
 ## Repository layout
 
