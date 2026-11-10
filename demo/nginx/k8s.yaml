@@ -38,8 +38,7 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: demo-nginx:dev
-          imagePullPolicy: Never   # image is loaded into the nodes by hand
+          image: ghcr.io/nagisatosanae/config-reload-operator/demo-nginx:0.1.0
           ports:
             - containerPort: 80
           volumeMounts:
