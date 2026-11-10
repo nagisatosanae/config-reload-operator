@@ -54,6 +54,12 @@ func TestControllers(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// These specs need the envtest API server, which takes a few seconds to
+	// start. "go test -short ./..." runs only the plain unit tests.
+	if testing.Short() {
+		Skip("skipping the envtest suite because -short is set")
+	}
+
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
@@ -86,6 +92,9 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	if testEnv == nil {
+		return // BeforeSuite skipped the suite, so there is nothing to stop
+	}
 	By("tearing down the test environment")
 	cancel()
 	err := testEnv.Stop()
