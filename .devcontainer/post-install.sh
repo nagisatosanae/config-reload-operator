@@ -99,6 +99,25 @@ if command -v kubectl &> /dev/null; then
   fi
 fi
 
+# Install Helm
+if ! command -v helm &> /dev/null; then
+  echo "Installing Helm..."
+  HELM_VERSION=$(curl -Ls https://get.helm.sh/helm-latest-version)
+  curl -Ls "https://get.helm.sh/helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" | tar -xz -C /tmp "linux-${ARCH}/helm"
+  mv "/tmp/linux-${ARCH}/helm" /usr/local/bin/helm
+  rmdir "/tmp/linux-${ARCH}"
+  echo "Helm installed successfully"
+fi
+
+# Generate Helm bash completion
+if command -v helm &> /dev/null; then
+  if helm completion bash > "${BASH_COMPLETIONS_DIR}/helm" 2>/dev/null; then
+    echo "helm completion installed"
+  else
+    echo "WARNING: Failed to generate helm completion"
+  fi
+fi
+
 # Generate Docker bash completion
 if command -v docker &> /dev/null; then
   if docker completion bash > "${BASH_COMPLETIONS_DIR}/docker" 2>/dev/null; then
@@ -142,6 +161,7 @@ echo "------------------------------------"
 kind version
 kubebuilder version
 kubectl version --client
+helm version --short
 docker --version
 go version
 
