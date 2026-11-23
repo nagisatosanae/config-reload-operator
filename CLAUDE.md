@@ -59,7 +59,7 @@ make docker-build IMG=manager:dev     # manager 이미지
 - `api/v1alpha1/*_types.go`나 `+kubebuilder` 마커를 고치면 `make manifests generate`를 실행하고 생성된 파일을 같이 커밋 대상에 넣는다.
 - 생성 파일은 손으로 고치지 않는다: `zz_generated.deepcopy.go`, `config/crd/bases/`, `config/rbac/role.yaml`, `charts/config-reload-operator/crds/`.
 - watcher와 demo 이미지는 Docker 밖에서 빌드한 `bin/watcher`를 복사한다. 이미지를 만들기 전에 `./build.sh`를 먼저 실행한다.
-- `test/e2e/`는 kubebuilder가 만든 기본 틀이다(빌드 태그 `e2e`). 전체 흐름은 아직 README의 quick start로 직접 확인한다.
+- e2e 테스트는 없다. 전체 흐름은 README의 quick start로 직접 확인한다.
 
 ## 테스트
 

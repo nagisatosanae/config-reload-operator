@@ -110,21 +110,10 @@ type ConfigReloadPolicySpec struct {
 
 // ConfigReloadPolicyStatus defines the observed state of ConfigReloadPolicy.
 type ConfigReloadPolicyStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the ConfigReloadPolicy resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// conditions holds the state of the policy. The controller sets one
+	// condition, "Ready". It is True when the watcher settings are on the
+	// Deployment. When it is False, the reason and the message say what is
+	// wrong.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

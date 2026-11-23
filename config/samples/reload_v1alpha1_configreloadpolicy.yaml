@@ -3,7 +3,6 @@ kind: ConfigReloadPolicy
 metadata:
   labels:
     app.kubernetes.io/name: config-reload-operator
-    app.kubernetes.io/managed-by: kustomize
   name: nginx-reload
   namespace: demo
 spec:
