@@ -101,6 +101,15 @@ type ConfigReloadPolicySpec struct {
 	// +required
 	ConfigMapRef ConfigMapRef `json:"configMapRef"`
 
+	// mountPath is the directory in that container where the ConfigMap is
+	// mounted. The watcher watches this directory. It must be an absolute
+	// path with no slash at the end, like /etc/nginx/conf.d.
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:XValidation:rule="self.startsWith('/') && !self.endsWith('/')",message="mountPath must be an absolute path with no slash at the end, like /etc/nginx/conf.d"
+	// +required
+	MountPath string `json:"mountPath"`
+
 	// reload says how to reload the app. If you leave it out, the app gets
 	// SIGHUP three seconds after the last change.
 	// +kubebuilder:default={}
@@ -118,6 +127,16 @@ type ConfigReloadPolicyStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// pods is the number of Pods of the workload that this policy applies
+	// to.
+	// +optional
+	Pods int32 `json:"pods,omitempty"`
+
+	// injectedPods is how many of those Pods carry the settings of this
+	// policy.
+	// +optional
+	InjectedPods int32 `json:"injectedPods,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -126,6 +145,8 @@ type ConfigReloadPolicyStatus struct {
 // +kubebuilder:printcolumn:name="Workload",type=string,JSONPath=`.spec.workloadRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Pods",type=integer,JSONPath=`.status.pods`
+// +kubebuilder:printcolumn:name="Injected",type=integer,JSONPath=`.status.injectedPods`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ConfigReloadPolicy is the Schema for the configreloadpolicies API

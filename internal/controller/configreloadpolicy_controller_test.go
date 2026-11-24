@@ -92,6 +92,7 @@ func newPolicy(name, deployment string) *reloadv1alpha1.ConfigReloadPolicy {
 			WorkloadRef:   reloadv1alpha1.WorkloadRef{Name: deployment},
 			ContainerName: appContainer,
 			ConfigMapRef:  reloadv1alpha1.ConfigMapRef{Name: deployment + "-config"},
+			MountPath:     mountPath,
 		},
 	}
 }
@@ -314,6 +315,15 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		}),
 		Entry("no workload name", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
 			pol.Spec.WorkloadRef.Name = ""
+		}),
+		Entry("no mount path", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
+			pol.Spec.MountPath = ""
+		}),
+		Entry("a mount path that does not start at the root", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
+			pol.Spec.MountPath = "etc/nginx/conf.d"
+		}),
+		Entry("a mount path with a slash at the end", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
+			pol.Spec.MountPath = mountPath + "/"
 		}),
 	)
 

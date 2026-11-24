@@ -11,5 +11,6 @@ spec:
   containerName: nginx
   configMapRef:
     name: nginx-config
+  mountPath: /etc/nginx/conf.d
   reload:
     validateCommand: ["nginx", "-t"]
