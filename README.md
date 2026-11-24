@@ -33,27 +33,33 @@ files and sent the signal. It worked, but it had weak points.
 | The path and the signal were fixed in the image. | Every app needed its own build. |
 | Nothing reported a wrong setup. | It failed without a message. |
 
-This project is that idea made general, with these weak points fixed.
+This project is that idea made general, with these weak points fixed or
+made smaller. What is left is under [Limits](#limits).
 
 ## How it works
 
-There are two parts.
+There are three parts.
 
-- The **watcher** is a small Go binary inside the app's image. It runs as
-  PID 1 and starts the app as its child. It watches the config directory.
-  When the content changes, it checks the new config and sends the signal.
-- The **controller** reads `ConfigReloadPolicy` objects. A policy names a
-  Deployment, a container and a ConfigMap. The controller checks them, finds
-  where the ConfigMap is mounted, and puts the watcher's settings on the
-  container as `WATCH_*` environment variables. A webhook in the same binary
-  does this while a Deployment is being created, so its first Pods already
-  have the settings.
+- The **watcher** is a small Go binary inside the app's image. A start
+  script starts it next to the app and then turns into the app. So the app
+  is PID 1 and the watcher is its child. The watcher watches the config
+  directory. When the content changes, it checks the new config and sends
+  the signal to the app.
+- The **webhook** reads `ConfigReloadPolicy` objects. A policy names a
+  Deployment, a container, a ConfigMap and the path to mount it at. When a
+  Pod of that Deployment is created, the webhook adds the ConfigMap volume,
+  its mount and the watcher's settings as `CONFIG_RELOAD_*` environment
+  variables. It only does this for a Pod that asks for it with an
+  annotation. The Deployment itself is never changed.
+- The **controller** writes into the status of the policy how many Pods
+  carry the settings. It writes nothing else.
 
 ```text
-Setup, once:
+When a Pod starts:
 
-  ConfigReloadPolicy --> controller --> WATCH_* env on the Deployment
-  a new Deployment   --> webhook    --> the same env, before it is stored
+  ConfigReloadPolicy, and the annotation on the Pod template
+    --> the webhook adds the volume, the mount and CONFIG_RELOAD_* env
+    --> the start script starts the watcher and turns into the app
 
 Every config change after that:
 
@@ -65,12 +71,13 @@ Every config change after that:
     --> the app reads its config again: same Pod, same process
 ```
 
-The controller is not on the reload path. Reloads keep working while the
-controller is down. The watcher never talks to the Kubernetes API, so app
-Pods need no extra permissions.
+The webhook and the controller are not on the reload path. Reloads keep
+working while both are down. The watcher never talks to the Kubernetes API,
+so app Pods need no extra permissions.
 
-The webhook is only a shortcut. When it cannot be reached, the Deployment
-is still accepted, and the controller sets the env a moment later.
+The webhook is only needed when a Pod is created. A Pod that runs is never
+changed, also not when its policy is deleted. Why it is built this way is in
+[docs/design.md](docs/design.md).
 
 ## What is better now
 
@@ -80,11 +87,11 @@ is still accepted, and the controller sets the env a moment later.
 | Compares the content of the files, not the file events. | No reload when nothing really changed. |
 | Waits for a quiet time, 3 seconds by default. | The six file events of one ConfigMap update become one reload. |
 | Can run a check command first, such as `nginx -t`. | A broken config is not loaded. The app keeps running with the old one. |
-| The watcher is PID 1 and the app is its child. | Stop signals reach the app. The container exits with the app's exit code. Leftover child processes are cleaned up. |
+| The app is PID 1 and the watcher runs next to it. | Stop signals reach the app directly, and the container exits with the app's exit code. A watcher that fails cannot stop the app. |
 | Settings come from a policy, not from the image. | One image works for any path and any signal. |
-| The policy has a status. | A wrong setup shows up as `Ready=False` with a reason. |
-| The controller writes only when something is different. | Running it again changes nothing, so there are no surprise rollouts. |
-| Deleting a policy takes its settings off the Deployment. | Your own environment variables are left alone. |
+| The policy has a status. | A wrong setup shows up as `Ready=False` with a reason, and you see how many Pods carry the settings. |
+| Only new Pods get the settings. | Your Deployment is never changed and a Pod that runs is never touched, so there are no surprise rollouts. |
+| Deleting a policy changes nothing that runs. | Pods keep their settings until they are replaced. |
 
 Measured on a real cluster with the NGINX demo: one ConfigMap update made
 six file events and one `SIGHUP`. The NGINX master process kept its PID. The
@@ -105,7 +112,7 @@ git clone https://github.com/nagisatosanae/config-reload-operator.git
 cd config-reload-operator
 ```
 
-**1. Install the controller.**
+**1. Install the operator.** This is the webhook and the controller.
 
 ```sh
 helm upgrade --install config-reload-operator ./charts/config-reload-operator \
@@ -117,8 +124,8 @@ there. So this step is safe to run again.
 
 **2. Add a policy and start the demo app.** The demo is NGINX with the
 watcher in its image. Its config comes from the ConfigMap `nginx-config`.
-The policy goes in first, so the webhook finds it when the Deployment is
-created.
+The policy goes in first. A Deployment whose Pods could not get their
+settings is turned down when you apply it.
 
 ```sh
 kubectl create namespace demo --save-config
@@ -130,15 +137,16 @@ kubectl get configreloadpolicies -n demo
 ```
 
 ```text
-NAME           WORKLOAD     READY   REASON       AGE
-nginx-reload   nginx-demo   True    Configured   30s
+NAME           WORKLOAD     READY   REASON     PODS   INJECTED   AGE
+nginx-reload   nginx-demo   True    Injected   1      1          30s
 ```
 
-The demo Deployment has the annotation
-`reload.nagisatosanae.github.io/inject: "true"`. So the webhook puts the
-watcher's settings on it while it is created. The Pod starts one time and
-is not replaced in the next steps. The policy becomes ready up to 30
-seconds later, when the controller looks again.
+The Pod template of the demo Deployment has the annotation
+`reload.nagisatosanae.github.io/inject: "true"`. So the webhook gives the
+new Pod the ConfigMap volume, its mount and the watcher's settings. The
+Deployment has none of them, and
+`kubectl get deployment nginx-demo -n demo -o yaml` shows it as you applied
+it. The Pod starts one time and is not replaced in the next steps.
 
 **3. Look at the Pod and its answer.** Remember the Pod name.
 
@@ -211,8 +219,7 @@ kubectl exec -n demo deploy/nginx-demo -- wget -qO- http://127.0.0.1/
 v2
 ```
 
-**7. Clean up.** Delete the policy first. The controller takes its settings
-off the Deployment at that moment, so it must still be running.
+**7. Clean up.**
 
 ```sh
 kubectl delete -f config/samples/reload_v1alpha1_configreloadpolicy.yaml
@@ -235,23 +242,30 @@ again by itself when the file changes. Something has to send it a signal.
 These steps make the watcher do that. Any other app that reloads on a signal
 works the same way.
 
-**1. Put the watcher in your image.** It is one static binary. Make it the
-entrypoint and give it your app as the command after `--`.
+**1. Put the watcher in your image.** It is one static binary and a small
+start script. Copy both, make the script the entrypoint, and give it the
+command your image ran before.
 
 ```dockerfile
 FROM nginx:stable-alpine
-COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.0 /watcher /usr/local/bin/watcher
-ENTRYPOINT ["/usr/local/bin/watcher"]
-CMD ["--", "/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
+COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.0 \
+     /watcher /watcher-entrypoint.sh /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/watcher-entrypoint.sh"]
+CMD ["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
 ```
 
-Without a policy the watcher only runs the app, so the image is safe to use
-anywhere. More about the images is in [docs/images.md](docs/images.md).
+`CMD` is what the base image ran before: its `ENTRYPOINT` followed by its
+`CMD`. This command shows both:
 
-**2. Mount the ConfigMap as a directory.** Do not use `subPath`. The kubelet
-never updates files that are mounted with `subPath`.
+```sh
+docker inspect --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' nginx:stable-alpine
+```
 
-**3. Write a policy** in the same namespace as the Deployment.
+The script needs a shell in the image. Without a policy it only starts the
+app, so the image is safe to use anywhere. More about the images is in
+[docs/images.md](docs/images.md).
+
+**2. Write a policy** in the same namespace as the Deployment.
 
 ```yaml
 apiVersion: reload.nagisatosanae.github.io/v1alpha1
@@ -265,6 +279,7 @@ spec:
   containerName: nginx
   configMapRef:
     name: nginx-config
+  mountPath: /etc/nginx/conf.d
   reload:
     signal: SIGHUP
     debounceSeconds: 3
@@ -275,7 +290,8 @@ spec:
 |---|---|---|
 | `spec.workloadRef.name` | required | The Deployment to reload. It cannot be changed later. |
 | `spec.containerName` | required | The container that runs the watcher and the app. It cannot be changed later. |
-| `spec.configMapRef.name` | required | The ConfigMap with the config files. It must be mounted in that container. |
+| `spec.configMapRef.name` | required | The ConfigMap with the config files. The webhook mounts it in that container. |
+| `spec.mountPath` | required | The directory where the ConfigMap is mounted. The watcher watches it. An absolute path with no slash at the end. |
 | `spec.reload.signal` | `SIGHUP` | `SIGHUP`, `SIGUSR1` or `SIGUSR2`. |
 | `spec.reload.debounceSeconds` | `3` | How long the files must stay quiet before the reload. 0 to 3600. |
 | `spec.reload.validateCommand` | none | A command that checks the new config. It runs in the container, without a shell, for at most 10 seconds. If it fails, no signal is sent. |
@@ -285,28 +301,38 @@ working.
 
 | Reason | Ready | Meaning |
 |---|---|---|
-| `Configured` | True | The watcher's settings are on the Deployment. |
+| `Injected` | True | Every Pod carries the settings. |
+| `Accepted` | True | There are no Pods yet. New ones get the settings. |
+| `NotInjected` | False | A Pod runs without the settings. |
+| `Outdated` | False | A Pod carries the settings from before the policy was changed. |
 | `WorkloadNotFound` | False | There is no Deployment with that name. |
 | `ContainerNotFound` | False | The Deployment has no container with that name. |
-| `ConfigMapNotMounted` | False | The container does not mount that ConfigMap. |
-| `SubPathNotSupported` | False | The ConfigMap is mounted with `subPath`. |
+| `NotOptedIn` | False | The Pod template of the Deployment does not have the annotation. |
 
-When a policy is not ready, the controller looks again every 30 seconds and
-does not touch the Deployment.
+The controller only reports. A Pod that runs gets the current settings when
+it is replaced, for example with `kubectl rollout restart`.
 
-**4. Add the annotation to the Deployment.** This step is optional.
+**3. Add the annotation to the Pod template of your Deployment.**
 
 ```yaml
-metadata:
-  annotations:
-    reload.nagisatosanae.github.io/inject: "true"
+spec:
+  template:
+    metadata:
+      annotations:
+        reload.nagisatosanae.github.io/inject: "true"
 ```
 
-With the annotation, a webhook puts the watcher's settings on the Deployment
-while it is created or updated, so the first Pods already have them. The
-policy must be there before the Deployment. Without the annotation, or when
-the policy comes later, the controller sets them a moment later and the Pods
-are replaced one time.
+You do not mount the ConfigMap yourself. The webhook mounts it in every new
+Pod, at the path the policy names. If the container already mounts the same
+ConfigMap at that path, that mount is used. Do not use `subPath`: the
+kubelet never updates files that are mounted with it.
+
+The policy must be there before the Deployment. A Deployment whose Pods
+cannot get their settings is rejected when you apply it, and the message
+says why. That is `webhook.failurePolicy: Fail`, the default. With `Ignore`
+it is let in with a warning, and its Pods start as you wrote them, without
+the ConfigMap. Keep `Fail` for an app that cannot run without its
+ConfigMap.
 
 The Helm chart has its own page:
 [charts/config-reload-operator](charts/config-reload-operator/README.md).
@@ -342,24 +368,25 @@ start above. An end-to-end test on a kind cluster is the next thing to add.
 
 ## Limits
 
-- The app's image must contain the watcher. You have to build an image once.
-- Only Deployments, and only ConfigMaps mounted as a directory.
+- The app's image must contain the watcher and a shell. You have to build
+  an image once.
+- Only Deployments, and one ConfigMap directory for each container.
 - The kubelet needs up to about a minute to update the files. This is not
   for changes that must apply at once.
-- Changing or deleting a policy replaces the Pod one time, because the
-  settings are environment variables. So does a new policy for a Deployment
-  that is already running. Config changes after that do not replace it.
-- The watcher is PID 1. If it crashes, the container stops. That is why it
-  is small and well tested.
+- A changed policy reaches a Pod only when the Pod is replaced, because the
+  settings are environment variables. The operator does not replace Pods.
+  Config changes do not need that.
+- Nothing restarts the watcher. It starts watching again by itself after a
+  failure, but when its process is killed, reloads stop until the Pod is
+  replaced. `watcher --healthcheck` lets a probe notice.
+- With `failurePolicy: Fail`, no Pod with the annotation can start while no
+  webhook Pod is up. The chart runs two of them.
 
 You do not need this project for apps that read their config again on their
 own, or for apps where a restart is cheap.
 
 ## Not done yet
 
-- **Two policies for one container.** Today they overwrite each other. A
-  rule where the older policy wins and the other one reports `Conflict` is
-  designed and tested, but not merged.
 - **Metrics and Kubernetes Events** for reloads and failed checks.
 - **More kinds of workloads and config**: StatefulSet, DaemonSet, Secrets,
   reload by HTTP call.
@@ -370,8 +397,8 @@ own, or for apps where a restart is cheap.
 |---|---|
 | `api/v1alpha1/` | The `ConfigReloadPolicy` type. |
 | `internal/controller/` | The controller, the webhook and their tests. |
-| `cmd/manager/` | The controller binary. |
-| `cmd/watcher/` | The watcher binary, its tests and its Dockerfile. |
+| `cmd/manager/` | The binary of the controller and the webhook. |
+| `cmd/watcher/` | The watcher binary, its start script, its tests and its Dockerfile. |
 | `charts/config-reload-operator/` | The Helm chart. |
 | `demo/nginx/` | The demo image and its manifests. |
 | `config/` | Generated CRD and RBAC, and the sample policy. |

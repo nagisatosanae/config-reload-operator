@@ -4,9 +4,9 @@ The project ships three images on GitHub Container Registry.
 
 | Image | What is inside | Who uses it |
 |---|---|---|
-| `ghcr.io/nagisatosanae/config-reload-operator/watcher` | the `watcher` binary alone, in an empty image (about 5 MB) | your own app image, see below |
-| `ghcr.io/nagisatosanae/config-reload-operator/demo-nginx` | NGINX plus the watcher as PID 1 | the demo, the Helm example and the e2e test |
-| `ghcr.io/nagisatosanae/config-reload-operator/manager` | the controller | the Helm chart |
+| `ghcr.io/nagisatosanae/config-reload-operator/watcher` | the `watcher` binary and its start script, in an empty image (about 5 MB) | your own app image, see below |
+| `ghcr.io/nagisatosanae/config-reload-operator/demo-nginx` | NGINX with the watcher next to it | the demo, the Helm example and the e2e test |
+| `ghcr.io/nagisatosanae/config-reload-operator/manager` | the controller and the webhook | the Helm chart |
 
 ## Tags
 
@@ -29,19 +29,40 @@ git push origin v0.2.0
 
 ## Put the watcher in your own image
 
-The watcher is one static binary. Copy it in, make it PID 1, and give it
-your app as the child command after `--`:
+The watcher is one static binary and a small start script. Copy both in,
+make the script the start command, and give it the command your image ran
+before:
 
 ```dockerfile
 FROM nginx:stable-alpine
-COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.0 /watcher /usr/local/bin/watcher
-ENTRYPOINT ["/usr/local/bin/watcher"]
-CMD ["--", "/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
+COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.0 \
+     /watcher /watcher-entrypoint.sh /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/watcher-entrypoint.sh"]
+CMD ["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
 ```
 
-`demo/nginx/Dockerfile` is this, written out for NGINX. The watcher only
-runs the app until the controller sets `WATCH_DIR` on the container, so
-the image is safe to run without a policy.
+`demo/nginx/Dockerfile` is this, written out for NGINX.
+
+The script starts the watcher in the background and then turns into the
+command in `CMD`. So your app is PID 1, and the watcher is its child. The
+script needs a shell in the image. The two files must be in the same
+directory.
+
+Setting `ENTRYPOINT` clears the `CMD` of the base image, so write it again.
+It is what the base image ran before: its `ENTRYPOINT` followed by its
+`CMD`. For NGINX that is `/docker-entrypoint.sh` and then `nginx -g "daemon
+off;"`. This command shows both for any image:
+
+```sh
+docker inspect --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' nginx:stable-alpine
+```
+
+The script starts no watcher until the operator sets `CONFIG_RELOAD_DIR` on
+the container, so the image is safe to run without a policy.
+
+An image made for version 0.1 used the watcher itself as the start command
+(`watcher -- nginx ...`). The watcher of this version does not start the
+app. Called that way it stops with a message that names the start script.
 
 ## Build locally
 
