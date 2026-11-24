@@ -101,7 +101,7 @@ type PodInjector struct {
 func (p *PodInjector) Default(ctx context.Context, pod *corev1.Pod) error {
 	// The API server already filters on the annotation. Check again here, so
 	// the rule does not depend on how the webhook was registered.
-	if pod.Annotations[InjectAnnotation] != "true" {
+	if !asksForSettings(pod.Annotations) {
 		return nil
 	}
 	// The settings are already there: this Pod went through the webhook
@@ -125,6 +125,11 @@ func (p *PodInjector) Default(ctx context.Context, pod *corev1.Pod) error {
 	return nil
 }
 
+// asksForSettings tells if these annotations ask for the watcher settings.
+func asksForSettings(annotations map[string]string) bool {
+	return annotations[InjectAnnotation] == "true"
+}
+
 // problem decides what becomes of a Pod that cannot get its settings.
 func (p *PodInjector) problem(ctx context.Context, namespace string, pod *corev1.Pod, reason error) error {
 	name := pod.Name
@@ -140,14 +145,23 @@ func (p *PodInjector) problem(ctx context.Context, namespace string, pod *corev1
 }
 
 // inject returns a copy of pod with the settings of every policy that points
-// at its Deployment. It is all or nothing: when one policy cannot be
-// applied, the error says why and the Pod is not changed at all.
+// at its Deployment.
 func (p *PodInjector) inject(ctx context.Context, namespace string, pod *corev1.Pod) (*corev1.Pod, error) {
 	deployment, err := deploymentOf(pod)
 	if err != nil {
 		return nil, err
 	}
+	return p.injectFor(ctx, namespace, deployment, pod)
+}
 
+// injectFor returns a copy of pod with the settings of every policy that
+// points at the named Deployment. It is all or nothing: when one policy
+// cannot be applied, the error says why and nothing is changed.
+//
+// The check of a Deployment calls it too, with a Pod made from the Pod
+// template. So what is said when a Deployment is applied and what happens
+// when its Pods are made cannot differ.
+func (p *PodInjector) injectFor(ctx context.Context, namespace, deployment string, pod *corev1.Pod) (*corev1.Pod, error) {
 	var policies reloadv1alpha1.ConfigReloadPolicyList
 	if err := p.Client.List(ctx, &policies, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("the policies could not be read: %w", err)

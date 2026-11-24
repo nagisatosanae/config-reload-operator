@@ -202,11 +202,18 @@ func main() {
 			setupLog.Error(nil, "webhook-failure-policy must be Fail or Ignore", "value", webhookFailurePolicy)
 			os.Exit(1)
 		}
-		if err := (&controller.PodInjector{
+		injector := &controller.PodInjector{
 			Client:        mgr.GetClient(),
 			FailurePolicy: webhookFailurePolicy,
-		}).SetupWebhookWithManager(mgr); err != nil {
+		}
+		if err := injector.SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "pod")
+			os.Exit(1)
+		}
+		// The same checks, run when a Deployment is applied, so a problem is
+		// told at once and not only when the Pods are made.
+		if err := (&controller.DeploymentChecker{Injector: injector}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "deployment")
 			os.Exit(1)
 		}
 		// The Pod is not ready until the webhook server is listening.

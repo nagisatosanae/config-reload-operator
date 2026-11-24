@@ -30,6 +30,9 @@ webhook:
   # the webhook cannot be reached, no policy points at its Deployment, or the
   # policy cannot be applied to it. Fail rejects the Pod, and the message says
   # why. Ignore lets the Pod start as you wrote it, without the settings.
+  #
+  # The Deployment is checked the same way when you apply it. Fail rejects it
+  # at once. Ignore lets it in with a warning.
   failurePolicy: Fail
   # How many seconds the API server waits for the webhook.
   timeoutSeconds: 5

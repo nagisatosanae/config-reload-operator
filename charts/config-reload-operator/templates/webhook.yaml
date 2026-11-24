@@ -99,4 +99,52 @@ webhooks:
           has(object.metadata.annotations) &&
           'reload.nagisatosanae.github.io/inject' in object.metadata.annotations &&
           object.metadata.annotations['reload.nagisatosanae.github.io/inject'] == 'true'
+---
+# Tells the API server to ask the webhook before a Deployment is stored, but
+# only when its Pod template has the annotation. The Deployment is not
+# changed. It goes through the checks its Pods will go through, so a
+# Deployment whose Pods could not get their settings is turned down when it
+# is applied, and not only later, when the Pods are made. The path is also
+# in internal/controller/deployment_check.go. Keep them the same.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "config-reload-operator.labels" . | nindent 4 }}
+webhooks:
+  - name: check.reload.nagisatosanae.github.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ $service }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate-apps-v1-deployment
+        port: 443
+      caBundle: {{ $caCert }}
+    rules:
+      - apiGroups:
+          - apps
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - deployments
+        scope: Namespaced
+    matchConditions:
+      - name: pod-template-has-inject-annotation
+        expression: >-
+          has(object.spec.template.metadata) &&
+          has(object.spec.template.metadata.annotations) &&
+          'reload.nagisatosanae.github.io/inject' in object.spec.template.metadata.annotations &&
+          object.spec.template.metadata.annotations['reload.nagisatosanae.github.io/inject'] == 'true'
+      # A Deployment on its way out must not be held back.
+      - name: not-being-deleted
+        expression: "!has(object.metadata.deletionTimestamp)"
 {{- end }}

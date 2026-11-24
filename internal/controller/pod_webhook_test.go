@@ -89,11 +89,15 @@ type policySwitch struct {
 
 var testInjector = &policySwitch{policy: FailurePolicyFail}
 
-func (s *policySwitch) Default(ctx context.Context, pod *corev1.Pod) error {
+// injector returns a PodInjector with the failure policy of this moment.
+func (s *policySwitch) injector() *PodInjector {
 	s.mu.Lock()
-	injector := &PodInjector{Client: s.client, FailurePolicy: s.policy}
-	s.mu.Unlock()
-	return injector.Default(ctx, pod)
+	defer s.mu.Unlock()
+	return &PodInjector{Client: s.client, FailurePolicy: s.policy}
+}
+
+func (s *policySwitch) Default(ctx context.Context, pod *corev1.Pod) error {
+	return s.injector().Default(ctx, pod)
 }
 
 // use sets the failure policy until the spec is over.
@@ -208,6 +212,8 @@ type problem struct {
 	prepare func(pod *corev1.Pod)
 	// message is a part of what the user is told.
 	message string
+	// podOnly is true for a problem that a Deployment cannot have.
+	podOnly bool
 }
 
 var problems = []problem{
@@ -265,13 +271,18 @@ var problems = []problem{
 			pod.OwnerReferences = nil
 		},
 		message: "it does not belong to a Deployment",
+		podOnly: true,
 	},
 }
 
-// problemEntries turns problems into the entries of a table.
-func problemEntries() []TableEntry {
+// problemEntries turns problems into the entries of a table. With
+// forDeployments, the ones that only a Pod can have are left out.
+func problemEntries(forDeployments bool) []TableEntry {
 	entries := make([]TableEntry, 0, len(problems))
 	for _, p := range problems {
+		if forDeployments && p.podOnly {
+			continue
+		}
 		entries = append(entries, Entry(p.what, p))
 	}
 	return entries
@@ -360,7 +371,7 @@ var _ = Describe("Pod webhook", func() {
 			Expect(err.Error()).To(ContainSubstring(p.message))
 			Expect(err.Error()).To(ContainSubstring(InjectAnnotation), "the message names the annotation")
 		},
-		problemEntries(),
+		problemEntries(false),
 	)
 
 	DescribeTable("lets the same Pod start as it was written when the failure policy is Ignore",
@@ -376,7 +387,7 @@ var _ = Describe("Pod webhook", func() {
 			Expect(got.Spec.Containers[1].Env).To(Equal(written.Spec.Containers[1].Env))
 			Expect(got.Spec.Containers[1].VolumeMounts).To(HaveLen(len(written.Spec.Containers[1].VolumeMounts)))
 		},
-		problemEntries(),
+		problemEntries(false),
 	)
 
 	DescribeTable("is not sent to the webhook without the annotation",
@@ -433,8 +444,11 @@ func TestChartMatchesTheWebhook(t *testing.T) {
 	chart := strings.Join(strings.Fields(string(raw)), " ")
 
 	for what, want := range map[string]string{
-		"path": "path: " + injectPath,
-		"rule": injectCondition,
+		"path":                     "path: " + injectPath,
+		"rule":                     injectCondition,
+		"path of the check":        "path: " + checkPath,
+		"rule of the check":        checkCondition,
+		"rule for deleted objects": `expression: "` + notDeletedCondition + `"`,
 	} {
 		if !strings.Contains(chart, want) {
 			t.Errorf("the chart does not have the %s the webhook uses: %s", what, want)

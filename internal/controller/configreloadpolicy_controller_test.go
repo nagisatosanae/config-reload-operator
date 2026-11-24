@@ -136,6 +136,13 @@ func readyCondition(policy string) *metav1.Condition {
 }
 
 var _ = Describe("ConfigReloadPolicy controller", func() {
+	// These specs are about what the controller reports. Some of them need a
+	// Deployment that the Deployment check would turn down, so here the check
+	// only warns.
+	BeforeEach(func() {
+		testInjector.use(FailurePolicyIgnore)
+	})
+
 	It("gets its defaults from the API server", func() {
 		create(newPolicy("defaults-reload", "defaults"))
 		pol := getPolicy("defaults-reload")

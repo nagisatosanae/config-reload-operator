@@ -119,7 +119,7 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// 5. The Pod template must ask for the settings. Without the annotation
 	// the API server does not send the Pods to the webhook.
-	if template.Annotations[InjectAnnotation] != "true" {
+	if !asksForSettings(template.Annotations) {
 		msg := fmt.Sprintf("the Pod template of Deployment %q does not have the annotation %s: \"true\"",
 			dep.Name, InjectAnnotation)
 		return ctrl.Result{RequeueAfter: retryAfter},

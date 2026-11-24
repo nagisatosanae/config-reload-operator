@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -82,9 +83,11 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
-		// Register the Pod webhook with the API server.
+		// Register the Pod webhook and the Deployment check with the API
+		// server.
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
-			MutatingWebhooks: []*admissionv1.MutatingWebhookConfiguration{injectorWebhookConfig()},
+			MutatingWebhooks:   []*admissionv1.MutatingWebhookConfiguration{injectorWebhookConfig()},
+			ValidatingWebhooks: []*admissionv1.ValidatingWebhookConfiguration{checkerWebhookConfig()},
 		},
 	}
 
@@ -111,6 +114,7 @@ var _ = BeforeSuite(func() {
 	})
 	testInjector.client = k8sClient
 	server.Register(injectPath, admission.WithDefaulter[*corev1.Pod](scheme.Scheme, testInjector))
+	server.Register(checkPath, admission.WithValidator[*appsv1.Deployment](scheme.Scheme, checkerSwitch{testInjector}))
 	go func() {
 		defer GinkgoRecover()
 		Expect(server.Start(ctx)).To(Succeed())
