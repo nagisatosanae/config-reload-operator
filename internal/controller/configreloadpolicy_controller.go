@@ -48,10 +48,10 @@ const (
 	conditionReady = "Ready"
 
 	// The watcher reads these from its environment.
-	envWatchDir = "WATCH_DIR"
-	envSignal   = "WATCH_SIGNAL"
-	envDebounce = "WATCH_DEBOUNCE_SECONDS"
-	envValidate = "WATCH_VALIDATE_COMMAND"
+	envWatchDir = "CONFIG_RELOAD_DIR"
+	envSignal   = "CONFIG_RELOAD_SIGNAL"
+	envDebounce = "CONFIG_RELOAD_DEBOUNCE_SECONDS"
+	envValidate = "CONFIG_RELOAD_VALIDATE_COMMAND"
 
 	// retryAfter is how long to wait before looking again when something
 	// the policy points at is missing or wrong.

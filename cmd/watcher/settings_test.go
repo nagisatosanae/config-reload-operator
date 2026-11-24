@@ -22,7 +22,7 @@ func TestSignalFromEnv(t *testing.T) {
 	for _, c := range cases {
 		t.Setenv(envSignal, c.value)
 		if got := signalFromEnv(); got != c.want {
-			t.Errorf("WATCH_SIGNAL=%q: got %v, want %v", c.value, got, c.want)
+			t.Errorf("%s=%q: got %v, want %v", envSignal, c.value, got, c.want)
 		}
 	}
 }
@@ -43,7 +43,7 @@ func TestQuietFromEnv(t *testing.T) {
 	for _, c := range cases {
 		t.Setenv(envDebounce, c.value)
 		if got := quietFromEnv(); got != c.want {
-			t.Errorf("WATCH_DEBOUNCE_SECONDS=%q: got %v, want %v", c.value, got, c.want)
+			t.Errorf("%s=%q: got %v, want %v", envDebounce, c.value, got, c.want)
 		}
 	}
 }

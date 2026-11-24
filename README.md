@@ -240,7 +240,7 @@ entrypoint and give it your app as the command after `--`.
 
 ```dockerfile
 FROM nginx:stable-alpine
-COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.1.1 /watcher /usr/local/bin/watcher
+COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.0 /watcher /usr/local/bin/watcher
 ENTRYPOINT ["/usr/local/bin/watcher"]
 CMD ["--", "/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
 ```
@@ -328,7 +328,7 @@ downloads the two binaries the first time.
 
 | Part | Tests | What they cover |
 |---|---|---|
-| watcher | 19 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, cleaning up leftover child processes. |
+| watcher | 25 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, the start script, a watch process that fails without hurting the app. |
 | controller | 27 envtest cases and 4 Go tests | Defaults and bad values at the API server, settings written once and not again, your own environment variables kept, every not-ready reason, clean-up when a policy is deleted, the webhook when a Deployment is created or updated. |
 
 GitHub Actions runs the tests and the linter on every push.
