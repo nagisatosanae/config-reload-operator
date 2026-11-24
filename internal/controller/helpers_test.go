@@ -18,6 +18,7 @@ package controller
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -26,7 +27,7 @@ import (
 	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
 )
 
-// These are plain Go tests for the parts of Reconcile that never talk to
+// These are plain Go tests for the parts of the webhook that never talk to
 // the API server. They need no envtest, so they also run with
 // "go test -short".
 
@@ -34,155 +35,106 @@ func ev(name, value string) corev1.EnvVar {
 	return corev1.EnvVar{Name: name, Value: value}
 }
 
-func TestFindWatchDir(t *testing.T) {
+func TestDeploymentOf(t *testing.T) {
 	tests := []struct {
-		name       string
-		container  string
-		change     func(dep *appsv1.Deployment)
-		wantIdx    int
-		wantDir    string
-		wantReason string
+		name   string
+		change func(pod *corev1.Pod)
+		want   string
 	}{
 		{
-			name:      "the mount is found",
-			container: appContainer,
-			wantIdx:   1,
-			wantDir:   mountPath,
+			name: "a Pod of a Deployment",
+			want: "web",
 		},
 		{
-			name:      "the volume name does not matter, only the ConfigMap name",
-			container: appContainer,
-			change: func(dep *appsv1.Deployment) {
-				dep.Spec.Template.Spec.Volumes[0].Name = "cfg"
-				dep.Spec.Template.Spec.Containers[1].VolumeMounts[0].Name = "cfg"
+			name: "a Deployment name with dashes in it",
+			change: func(pod *corev1.Pod) {
+				pod.OwnerReferences[0].Name = "my-web-app-" + podHash
 			},
-			wantIdx: 1,
-			wantDir: mountPath,
+			want: "my-web-app",
 		},
 		{
-			name:       "no such container",
-			container:  otherContainer,
-			wantIdx:    -1,
-			wantReason: reasonContainerNotFound,
+			name:   "no owner",
+			change: func(pod *corev1.Pod) { pod.OwnerReferences = nil },
 		},
 		{
-			name:      "the ConfigMap is not mounted",
-			container: appContainer,
-			change: func(dep *appsv1.Deployment) {
-				dep.Spec.Template.Spec.Volumes[0].ConfigMap.Name = "other-config"
-			},
-			wantIdx:    1,
-			wantReason: reasonConfigMapNotMounted,
+			name:   "the owner is not a ReplicaSet",
+			change: func(pod *corev1.Pod) { pod.OwnerReferences[0].Kind = "StatefulSet" },
 		},
 		{
-			name:      "the ConfigMap is mounted with subPath",
-			container: appContainer,
-			change: func(dep *appsv1.Deployment) {
-				dep.Spec.Template.Spec.Containers[1].VolumeMounts[0].SubPath = "default.conf"
-			},
-			wantIdx:    1,
-			wantReason: reasonSubPathNotSupported,
+			name:   "the owner is not the controller of the Pod",
+			change: func(pod *corev1.Pod) { pod.OwnerReferences[0].Controller = nil },
+		},
+		{
+			name:   "no hash label",
+			change: func(pod *corev1.Pod) { delete(pod.Labels, appsv1.DefaultDeploymentUniqueLabelKey) },
+		},
+		{
+			name:   "a ReplicaSet that no Deployment made",
+			change: func(pod *corev1.Pod) { pod.OwnerReferences[0].Name = "web" },
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dep := newDeployment("web")
+			pod := newPod("web")
 			if tc.change != nil {
-				tc.change(dep)
+				tc.change(pod)
 			}
-			idx, dir, reason, msg := findWatchDir(dep, tc.container, "web-config")
-			if idx != tc.wantIdx || dir != tc.wantDir || reason != tc.wantReason {
-				t.Fatalf("got (%d, %q, %q), want (%d, %q, %q)", idx, dir, reason, tc.wantIdx, tc.wantDir, tc.wantReason)
+			got, err := deploymentOf(pod)
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
 			}
-			if reason != "" && msg == "" {
-				t.Fatal("a reason needs a message")
+			if (err == nil) != (tc.want != "") {
+				t.Fatalf("error = %v, but the name is %q", err, got)
 			}
 		})
 	}
 }
 
-func TestSyncEnv(t *testing.T) {
-	want := []corev1.EnvVar{ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")}
-	tests := []struct {
-		name    string
-		env     []corev1.EnvVar
-		want    []corev1.EnvVar
-		out     []corev1.EnvVar
-		changed bool
-	}{
-		{
-			name:    "adds everything to an empty list",
-			want:    want,
-			out:     want,
-			changed: true,
-		},
-		{
-			name:    "keeps other env where it is",
-			env:     []corev1.EnvVar{ev("TZ", tz)},
-			want:    want,
-			out:     []corev1.EnvVar{ev("TZ", tz), ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")},
-			changed: true,
-		},
-		{
-			name:    "fixes a wrong value in place and adds what is missing",
-			env:     []corev1.EnvVar{ev(envWatchDir, "/old"), ev("TZ", tz)},
-			want:    want,
-			out:     []corev1.EnvVar{ev(envWatchDir, "/d"), ev("TZ", tz), ev(envSignal, "SIGHUP")},
-			changed: true,
-		},
-		{
-			name: "replaces a valueFrom with the plain value",
-			env: []corev1.EnvVar{{Name: envWatchDir, ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
-			}}},
-			want:    want,
-			out:     want,
-			changed: true,
-		},
-		{
-			name:    "drops our env that is no longer wanted",
-			env:     []corev1.EnvVar{ev(envWatchDir, "/d"), ev(envValidate, `["nginx","-t"]`), ev(envSignal, "SIGHUP")},
-			want:    want,
-			out:     want,
-			changed: true,
-		},
-		{
-			name:    "changes nothing when all is equal",
-			env:     []corev1.EnvVar{ev("TZ", tz), ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")},
-			want:    want,
-			out:     []corev1.EnvVar{ev("TZ", tz), ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP")},
-			changed: false,
-		},
-		{
-			name:    "removes all of ours when nothing is wanted",
-			env:     []corev1.EnvVar{ev("TZ", tz), ev(envWatchDir, "/d")},
-			out:     []corev1.EnvVar{ev("TZ", tz)},
-			changed: true,
-		},
+func TestEnsureMountAddsAVolumeWithANewName(t *testing.T) {
+	pol := newPolicy("web-reload", "web")
+	pod := newPod("web")
+	// The Pod already has a volume whose name starts like ours.
+	pod.Spec.Volumes = []corev1.Volume{{Name: volumePrefix + "mine"}}
+	app := &pod.Spec.Containers[1]
+
+	if err := ensureMount(pod, app, pol); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			before := append([]corev1.EnvVar(nil), tc.env...)
-			out, changed := syncEnv(tc.env, tc.want)
-			if changed != tc.changed {
-				t.Fatalf("changed = %v, want %v", changed, tc.changed)
-			}
-			if !reflect.DeepEqual(out, tc.out) {
-				t.Fatalf("out = %v, want %v", out, tc.out)
-			}
-			if !reflect.DeepEqual(tc.env, before) {
-				t.Fatal("the input was modified")
-			}
-		})
+	if len(pod.Spec.Volumes) != 2 {
+		t.Fatalf("the Pod has %d volumes, want 2", len(pod.Spec.Volumes))
+	}
+	added := pod.Spec.Volumes[1]
+	if !strings.HasPrefix(added.Name, volumePrefix) || added.Name == pod.Spec.Volumes[0].Name {
+		t.Fatalf("the new volume is named %q", added.Name)
+	}
+	if added.ConfigMap == nil || added.ConfigMap.Name != "web-config" {
+		t.Fatalf("the new volume is %+v, want the ConfigMap web-config", added.VolumeSource)
+	}
+	want := []corev1.VolumeMount{{Name: added.Name, MountPath: mountPath, ReadOnly: true}}
+	if !reflect.DeepEqual(app.VolumeMounts, want) {
+		t.Fatalf("mounts = %v, want %v", app.VolumeMounts, want)
+	}
+}
+
+func TestEnsureMountKnowsThePathWithASlashAtTheEnd(t *testing.T) {
+	pol := newPolicy("web-reload", "web")
+	pod := mountConfigMap(newPod("web"), "web-config", mountPath+"/")
+
+	if err := ensureMount(pod, &pod.Spec.Containers[1], pol); err != nil {
+		t.Fatal(err)
+	}
+	if len(pod.Spec.Volumes) != 1 {
+		t.Fatalf("the Pod has %d volumes, want only the user's own", len(pod.Spec.Volumes))
 	}
 }
 
 func TestWatcherEnv(t *testing.T) {
 	var pol reloadv1alpha1.ConfigReloadPolicy
+	pol.Spec.MountPath = "/d"
 
-	// Nothing set, as when the object never went through the API server:
-	// the safety-net defaults apply.
-	got := watcherEnv(&pol, "/d")
+	// Nothing else set, as when the object never went through the API
+	// server: the safety-net defaults apply.
+	got := watcherEnv(&pol)
 	want := []corev1.EnvVar{ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP"), ev(envDebounce, "3")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("defaults: got %v, want %v", got, want)
@@ -196,7 +148,7 @@ func TestWatcherEnv(t *testing.T) {
 		DebounceSeconds: &ten,
 		ValidateCommand: []string{"sh", "-c", `echo "a b"`},
 	}
-	got = watcherEnv(&pol, "/d")
+	got = watcherEnv(&pol)
 	want = []corev1.EnvVar{
 		ev(envWatchDir, "/d"),
 		ev(envSignal, sigUSR1),

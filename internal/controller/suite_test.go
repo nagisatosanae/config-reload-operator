@@ -30,7 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
-	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -82,7 +82,7 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
-		// Register the Deployment webhook with the API server.
+		// Register the Pod webhook with the API server.
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
 			MutatingWebhooks: []*admissionv1.MutatingWebhookConfiguration{injectorWebhookConfig()},
 		},
@@ -109,14 +109,14 @@ var _ = BeforeSuite(func() {
 		Port:    install.LocalServingPort,
 		CertDir: install.LocalServingCertDir,
 	})
-	server.Register(injectPath,
-		admission.WithDefaulter[*appsv1.Deployment](scheme.Scheme, &DeploymentInjector{Client: k8sClient}))
+	testInjector.client = k8sClient
+	server.Register(injectPath, admission.WithDefaulter[*corev1.Pod](scheme.Scheme, testInjector))
 	go func() {
 		defer GinkgoRecover()
 		Expect(server.Start(ctx)).To(Succeed())
 	}()
 
-	// Wait until the server answers. A Deployment made before that would fail.
+	// Wait until the server answers. A Pod made before that would fail.
 	address := net.JoinHostPort(install.LocalServingHost, strconv.Itoa(install.LocalServingPort))
 	Eventually(func() error {
 		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, "tcp", address,

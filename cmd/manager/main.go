@@ -58,6 +58,7 @@ func main() {
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var webhookPort int
+	var webhookFailurePolicy string
 	var enableLeaderElection bool
 	var probeAddr string
 	var secureMetrics bool
@@ -76,6 +77,10 @@ func main() {
 	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
 	flag.IntVar(&webhookPort, "webhook-port", 9443, "Port the webhook server listens on. "+
 		"Defaults to 9443. Set -1 to disable the webhook server.")
+	flag.StringVar(&webhookFailurePolicy, "webhook-failure-policy", controller.FailurePolicyFail,
+		"What happens to a Pod that asks for the watcher settings but cannot get them. "+
+			"Fail rejects the Pod. Ignore lets it start as it was written. "+
+			"Give it the same value as failurePolicy in the webhook registration.")
 	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
@@ -189,13 +194,19 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "configreloadpolicy")
 		os.Exit(1)
 	}
-	// The webhook is on when it has a certificate to serve with. Without one
-	// the manager runs as before, and the reconciler does all the work.
+	// The webhook is on when it has a certificate to serve with. It is the
+	// part that puts the watcher settings on new Pods. Without it the manager
+	// only reports the state of the policies.
 	if len(webhookCertPath) > 0 {
-		if err := (&controller.DeploymentInjector{
-			Client: mgr.GetClient(),
+		if webhookFailurePolicy != controller.FailurePolicyFail && webhookFailurePolicy != controller.FailurePolicyIgnore {
+			setupLog.Error(nil, "webhook-failure-policy must be Fail or Ignore", "value", webhookFailurePolicy)
+			os.Exit(1)
+		}
+		if err := (&controller.PodInjector{
+			Client:        mgr.GetClient(),
+			FailurePolicy: webhookFailurePolicy,
 		}).SetupWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "Failed to create webhook", "webhook", "deployment")
+			setupLog.Error(err, "Failed to create webhook", "webhook", "pod")
 			os.Exit(1)
 		}
 		// The Pod is not ready until the webhook server is listening.

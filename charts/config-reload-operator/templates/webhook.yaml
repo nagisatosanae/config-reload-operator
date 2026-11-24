@@ -55,10 +55,14 @@ spec:
       targetPort: webhook
       protocol: TCP
 ---
-# Tells the API server to send a Deployment to the webhook before it is
-# stored, but only a Deployment with the annotation
+# Tells the API server to send a new Pod to the webhook before it is stored,
+# but only a Pod with the annotation
 # reload.nagisatosanae.github.io/inject: "true". The annotation and the path
-# are also in internal/controller/deployment_webhook.go. Keep them the same.
+# are also in internal/controller/pod_webhook.go. Keep them the same.
+#
+# failurePolicy is what the API server does when it cannot reach the webhook.
+# The manager gets the same value as an argument, for the Pods the webhook
+# does see but cannot give the settings to.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
@@ -76,19 +80,18 @@ webhooks:
       service:
         name: {{ $service }}
         namespace: {{ .Release.Namespace }}
-        path: /mutate-apps-v1-deployment
+        path: /mutate--v1-pod
         port: 443
       caBundle: {{ $caCert }}
     rules:
       - apiGroups:
-          - apps
+          - ""
         apiVersions:
           - v1
         operations:
           - CREATE
-          - UPDATE
         resources:
-          - deployments
+          - pods
         scope: Namespaced
     matchConditions:
       - name: has-inject-annotation

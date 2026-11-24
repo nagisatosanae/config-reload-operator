@@ -29,16 +29,17 @@ kubectl get pods -n config-reload-operator-system
 | `image.pullPolicy` | `IfNotPresent` | When the node pulls the image. |
 | `imagePullSecrets` | `[]` | Secrets for a private registry. |
 | `resources` | requests 10m / 64Mi, limits 500m / 128Mi | CPU and memory of the controller. |
-| `webhook.enabled` | `true` | Installs the admission webhook. It puts the watcher's settings on a Deployment while it is created or updated. |
-| `webhook.failurePolicy` | `Ignore` | What the API server does when it cannot reach the webhook. `Ignore` lets the Deployment through, and the controller sets the settings afterwards. `Fail` rejects it. |
+| `webhook.enabled` | `true` | Installs the admission webhook. It puts the watcher's settings on a Pod while it is created. Without it no Pod gets them. |
+| `webhook.failurePolicy` | `Fail` | What happens to a Pod that has the annotation but cannot get the settings: the webhook cannot be reached, no policy points at its Deployment, or the policy cannot be applied. `Fail` rejects the Pod and says why. `Ignore` lets it start as you wrote it. |
 | `webhook.timeoutSeconds` | `5` | How long the API server waits for the webhook. |
 | `nodeSelector`, `tolerations`, `affinity` | empty | Where the controller Pods may run. |
 
 ## Webhook
 
-The webhook only looks at a Deployment with the annotation
-`reload.nagisatosanae.github.io/inject: "true"`. Every other Deployment in
-the cluster is left alone, also when the webhook is down.
+The webhook only looks at a Pod with the annotation
+`reload.nagisatosanae.github.io/inject: "true"`. Put it on the Pod template
+of your Deployment. Every other Pod in the cluster is left alone, also when
+the webhook is down.
 
 The API server talks to a webhook over TLS. The chart makes the certificate
 itself when it is installed, so cert-manager is not needed. An upgrade keeps

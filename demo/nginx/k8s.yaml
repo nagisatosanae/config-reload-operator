@@ -1,6 +1,8 @@
-# Local demo: one NGINX Deployment whose configuration comes from a ConfigMap
-# mounted as a directory (no subPath, so the kubelet can update the files).
-# Change X-Config-Version / the return body to v2, re-apply, and watch.
+# Local demo: one NGINX Deployment whose configuration comes from a ConfigMap.
+# The Deployment does not mount it. The operator does that for every new Pod,
+# from the policy in config/samples, because of the annotation on the Pod
+# template. Change X-Config-Version / the return body to v2, re-apply, and
+# watch.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -26,9 +28,6 @@ kind: Deployment
 metadata:
   name: nginx-demo
   namespace: demo
-  annotations:
-    # Lets the webhook set the watcher settings while this is created.
-    reload.nagisatosanae.github.io/inject: "true"
 spec:
   replicas: 1
   selector:
@@ -38,19 +37,16 @@ spec:
     metadata:
       labels:
         app: nginx-demo
+      annotations:
+        # Asks for the watcher settings. It is on the Pod template, so every
+        # Pod carries it.
+        reload.nagisatosanae.github.io/inject: "true"
     spec:
       containers:
         - name: nginx
           image: ghcr.io/nagisatosanae/config-reload-operator/demo-nginx:0.2.0
           ports:
             - containerPort: 80
-          volumeMounts:
-            - name: config
-              mountPath: /etc/nginx/conf.d   # whole directory, never subPath
-      volumes:
-        - name: config
-          configMap:
-            name: nginx-config
 ---
 apiVersion: v1
 kind: Service

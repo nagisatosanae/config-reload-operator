@@ -19,17 +19,18 @@ resources:
     cpu: 10m
     memory: 64Mi
 
-# The admission webhook sets the watcher settings on a Deployment while it is
-# being created or updated, so its first Pods already have them. Without the
-# webhook the controller does this a moment later, and the Pods are replaced
-# one more time. The webhook only looks at a Deployment with the annotation
-# reload.nagisatosanae.github.io/inject: "true".
+# The admission webhook puts the watcher settings on a Pod while it is being
+# created: the ConfigMap volume, its mount and the env. It only looks at a Pod
+# with the annotation reload.nagisatosanae.github.io/inject: "true", which you
+# put on the Pod template of your Deployment. Without the webhook no Pod gets
+# the settings.
 webhook:
   enabled: true
-  # What the API server does when it cannot reach the webhook. Ignore lets
-  # the Deployment through, and the controller fixes it afterwards. Fail
-  # rejects the Deployment.
-  failurePolicy: Ignore
+  # What happens to a Pod that has the annotation but cannot get the settings:
+  # the webhook cannot be reached, no policy points at its Deployment, or the
+  # policy cannot be applied to it. Fail rejects the Pod, and the message says
+  # why. Ignore lets the Pod start as you wrote it, without the settings.
+  failurePolicy: Fail
   # How many seconds the API server waits for the webhook.
   timeoutSeconds: 5
 

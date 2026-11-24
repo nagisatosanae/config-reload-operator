@@ -38,6 +38,7 @@ spec:
             - --health-probe-bind-address=:8081
             {{- if .Values.webhook.enabled }}
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
+            - --webhook-failure-policy={{ .Values.webhook.failurePolicy }}
             {{- end }}
           ports:
             - name: health

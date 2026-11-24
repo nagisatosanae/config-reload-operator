@@ -17,8 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"slices"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,23 +34,24 @@ import (
 
 // These tests run against the envtest API server: a real kube-apiserver and
 // etcd, but no kubelet and no other controllers. So the API server fills in
-// defaults and rejects bad values for real, and Reconcile patches a real
+// defaults and rejects bad values for real, and Reconcile reads a real
 // Deployment, but no Pod is ever started.
 
 const (
-	testNamespace  = "default"
-	appContainer   = "nginx"
+	testNamespace   = "default"
+	appContainer    = "nginx"
+	helperContainer = "helper"
+	// otherContainer is a name no container has.
 	otherContainer = "sidecar"
 	mountPath      = "/etc/nginx/conf.d"
 	tz             = "Asia/Seoul"
 	sigUSR1        = "SIGUSR1"
-	sigUSR2        = "SIGUSR2"
 )
 
 // newDeployment returns a Deployment like the demo: a helper container
-// first, then the app container "nginx" that mounts the ConfigMap
-// "<name>-config" at mountPath. env goes on the app container.
-func newDeployment(name string, env ...corev1.EnvVar) *appsv1.Deployment {
+// first, then the app container "nginx". Its Pod template asks for the
+// watcher settings with the annotation.
+func newDeployment(name string) *appsv1.Deployment {
 	labels := map[string]string{"app": name}
 	replicas := int32(0)
 	return &appsv1.Deployment{
@@ -61,24 +60,14 @@ func newDeployment(name string, env ...corev1.EnvVar) *appsv1.Deployment {
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{Name: "helper", Image: "busybox"},
-						{
-							Name:         appContainer,
-							Image:        "nginx:stable-alpine",
-							Env:          env,
-							VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: mountPath}},
-						},
-					},
-					Volumes: []corev1.Volume{{
-						Name: "config",
-						VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{Name: name + "-config"},
-						}},
-					}},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      labels,
+					Annotations: map[string]string{InjectAnnotation: "true"},
 				},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{
+					{Name: helperContainer, Image: "busybox"},
+					{Name: appContainer, Image: "nginx:stable-alpine"},
+				}},
 			},
 		},
 	}
@@ -103,11 +92,6 @@ func create(obj client.Object) {
 	Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 	DeferCleanup(func() {
 		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, obj))).To(Succeed())
-		if pol, ok := obj.(*reloadv1alpha1.ConfigReloadPolicy); ok {
-			// The finalizer holds the policy until Reconcile has cleaned up.
-			_, err := runReconcile(pol.Name)
-			Expect(err).NotTo(HaveOccurred())
-		}
 	})
 }
 
@@ -133,9 +117,14 @@ func getPolicy(name string) *reloadv1alpha1.ConfigReloadPolicy {
 	return pol
 }
 
-// appEnv returns the env of the app container.
-func appEnv(dep *appsv1.Deployment) []corev1.EnvVar {
-	return dep.Spec.Template.Spec.Containers[1].Env
+func policyExists(name string) bool {
+	GinkgoHelper()
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: testNamespace}, &reloadv1alpha1.ConfigReloadPolicy{})
+	if err == nil {
+		return true
+	}
+	Expect(err).To(MatchError(apierrors.IsNotFound, "a NotFound error"))
+	return false
 }
 
 // readyCondition returns the Ready condition of the policy.
@@ -144,12 +133,6 @@ func readyCondition(policy string) *metav1.Condition {
 	c := meta.FindStatusCondition(getPolicy(policy).Status.Conditions, conditionReady)
 	Expect(c).NotTo(BeNil(), "the policy has no Ready condition")
 	return c
-}
-
-var defaultEnv = []corev1.EnvVar{
-	{Name: envWatchDir, Value: mountPath},
-	{Name: envSignal, Value: "SIGHUP"},
-	{Name: envDebounce, Value: "3"},
 }
 
 var _ = Describe("ConfigReloadPolicy controller", func() {
@@ -162,89 +145,34 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(pol.Spec.Reload.ValidateCommand).To(BeEmpty())
 	})
 
-	It("sets the watcher env on the named container and reports Ready", func() {
-		userEnv := []corev1.EnvVar{
-			{Name: "TZ", Value: tz},
-			{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.name"},
-			}},
-		}
-		create(newDeployment("web", userEnv...))
+	It("reports Ready when the Deployment asks for the settings", func() {
+		create(newDeployment("web"))
 		create(newPolicy("web-reload", "web"))
 
 		result, err := runReconcile("web-reload")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}))
 
-		dep := getDeployment("web")
-		Expect(appEnv(dep)).To(Equal(slices.Concat(userEnv, defaultEnv)), "user env stays, watcher env is added")
-		Expect(dep.Spec.Template.Spec.Containers[0].Env).To(BeEmpty(), "the other container is left alone")
-		Expect(dep.Generation).To(Equal(int64(2)), "one write")
-
 		c := readyCondition("web-reload")
 		Expect(c.Status).To(Equal(metav1.ConditionTrue))
-		Expect(c.Reason).To(Equal(reasonConfigured))
+		Expect(c.Reason).To(Equal(reasonAccepted))
 		Expect(c.ObservedGeneration).To(Equal(int64(1)))
 	})
 
-	It("writes nothing when everything is already right", func() {
+	It("never writes the Deployment, and writes the status only when it changes", func() {
 		create(newDeployment("idle"))
+		depVersion := getDeployment("idle").ResourceVersion
 		create(newPolicy("idle-reload", "idle"))
 		_, err := runReconcile("idle-reload")
 		Expect(err).NotTo(HaveOccurred())
-		depVersion := getDeployment("idle").ResourceVersion
 		polVersion := getPolicy("idle-reload").ResourceVersion
 
 		for range 3 {
 			_, err := runReconcile("idle-reload")
 			Expect(err).NotTo(HaveOccurred())
 		}
-		Expect(getDeployment("idle").ResourceVersion).To(Equal(depVersion), "the Deployment was written again")
+		Expect(getDeployment("idle").ResourceVersion).To(Equal(depVersion), "the Deployment was written")
 		Expect(getPolicy("idle-reload").ResourceVersion).To(Equal(polVersion), "the status was written again")
-	})
-
-	It("fixes watcher env that was set by hand", func() {
-		create(newDeployment("manual", corev1.EnvVar{Name: envWatchDir, Value: "/somewhere/else"}))
-		create(newPolicy("manual-reload", "manual"))
-		_, err := runReconcile("manual-reload")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(appEnv(getDeployment("manual"))).To(Equal(defaultEnv))
-	})
-
-	It("follows the policy when it changes, and removes what is no longer asked for", func() {
-		create(newDeployment("change"))
-		create(newPolicy("change-reload", "change"))
-		_, err := runReconcile("change-reload")
-		Expect(err).NotTo(HaveOccurred())
-
-		By("asking for another signal, a longer quiet time and a check command")
-		pol := getPolicy("change-reload")
-		ten := int32(10)
-		pol.Spec.Reload.Signal = sigUSR2
-		pol.Spec.Reload.DebounceSeconds = &ten
-		pol.Spec.Reload.ValidateCommand = []string{"nginx", "-t"}
-		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
-		_, err = runReconcile("change-reload")
-		Expect(err).NotTo(HaveOccurred())
-		changed := []corev1.EnvVar{
-			{Name: envWatchDir, Value: mountPath},
-			{Name: envSignal, Value: sigUSR2},
-			{Name: envDebounce, Value: "10"},
-			{Name: envValidate, Value: `["nginx","-t"]`},
-		}
-		Expect(appEnv(getDeployment("change"))).To(Equal(changed))
-
-		By("dropping the check command again")
-		pol = getPolicy("change-reload")
-		pol.Spec.Reload.ValidateCommand = nil
-		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
-		_, err = runReconcile("change-reload")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(appEnv(getDeployment("change"))).To(Equal(changed[:3]), "the check command env is gone")
-
-		pol = getPolicy("change-reload")
-		Expect(pol.Generation).To(Equal(int64(3)))
-		Expect(readyCondition("change-reload").ObservedGeneration).To(Equal(pol.Generation))
 	})
 
 	DescribeTable("reports what is wrong in the Ready condition and looks again later",
@@ -273,14 +201,15 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 			func(_ *appsv1.Deployment, pol *reloadv1alpha1.ConfigReloadPolicy) {
 				pol.Spec.ContainerName = otherContainer
 			}, reasonContainerNotFound),
-		Entry("the ConfigMap is not mounted", "nomount",
+		Entry("the Pod template does not ask for the settings", "plain",
 			func(dep *appsv1.Deployment, _ *reloadv1alpha1.ConfigReloadPolicy) {
-				dep.Spec.Template.Spec.Volumes[0].ConfigMap.Name = "other-config"
-			}, reasonConfigMapNotMounted),
-		Entry("the ConfigMap is mounted with subPath", "subpath",
+				dep.Spec.Template.Annotations = nil
+			}, reasonNotOptedIn),
+		Entry("the annotation is on the Deployment and not on its Pod template", "misplaced",
 			func(dep *appsv1.Deployment, _ *reloadv1alpha1.ConfigReloadPolicy) {
-				dep.Spec.Template.Spec.Containers[1].VolumeMounts[0].SubPath = "default.conf"
-			}, reasonSubPathNotSupported),
+				dep.Annotations = dep.Spec.Template.Annotations
+				dep.Spec.Template.Annotations = nil
+			}, reasonNotOptedIn),
 	)
 
 	It("becomes Ready once the Deployment shows up", func() {
@@ -293,7 +222,6 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		_, err = runReconcile("late-reload")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(readyCondition("late-reload").Status).To(Equal(metav1.ConditionTrue))
-		Expect(appEnv(getDeployment("late"))).To(Equal(defaultEnv))
 	})
 
 	DescribeTable("is rejected by the API server when a value is bad",
@@ -333,20 +261,17 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 			policy := name + "-reload"
 			create(newDeployment(name))
 			create(newPolicy(policy, name))
-			_, err := runReconcile(policy)
-			Expect(err).NotTo(HaveOccurred())
 
 			pol := getPolicy(policy)
 			change(pol)
-			err = k8sClient.Update(ctx, pol)
+			err := k8sClient.Update(ctx, pol)
 			Expect(err).To(MatchError(apierrors.IsInvalid, "an Invalid error"))
 			Expect(err.Error()).To(ContainSubstring(field + " cannot be changed"))
 
-			By("leaving the stored policy and the Deployment as they were")
-			stored := getPolicy(policy)
-			Expect(stored.Spec.WorkloadRef.Name).To(Equal(name))
-			Expect(stored.Spec.ContainerName).To(Equal(appContainer))
-			Expect(appEnv(getDeployment(name))).To(Equal(defaultEnv))
+			By("leaving the stored policy as it was")
+			kept := getPolicy(policy)
+			Expect(kept.Spec.WorkloadRef.Name).To(Equal(name))
+			Expect(kept.Spec.ContainerName).To(Equal(appContainer))
 		},
 		Entry("to another Deployment", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
 			pol.Spec.WorkloadRef.Name = "elsewhere"
@@ -361,12 +286,35 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		policy := name + "-reload"
 		create(newDeployment(name))
 		create(newPolicy(policy, name))
-		_, err := runReconcile(policy)
-		Expect(err).NotTo(HaveOccurred())
 
 		pol := getPolicy(policy)
 		pol.Spec.ConfigMapRef.Name = name + "-settings"
+		pol.Spec.MountPath = "/etc/nginx/templates"
 		pol.Spec.Reload.Signal = sigUSR1
 		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
+	})
+
+	It("takes the finalizer of version 0.1 off a policy", func() {
+		create(newDeployment("old"))
+		pol := newPolicy("old-reload", "old")
+		pol.Finalizers = []string{oldFinalizer}
+		create(pol)
+
+		_, err := runReconcile("old-reload")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getPolicy("old-reload").Finalizers).To(BeEmpty())
+		Expect(readyCondition("old-reload").Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("lets a policy go that was deleted while it still had that finalizer", func() {
+		pol := newPolicy("stuck-reload", "stuck")
+		pol.Finalizers = []string{oldFinalizer}
+		create(pol)
+		Expect(k8sClient.Delete(ctx, pol)).To(Succeed())
+		Expect(policyExists("stuck-reload")).To(BeTrue(), "the finalizer holds it")
+
+		_, err := runReconcile("stuck-reload")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(policyExists("stuck-reload")).To(BeFalse())
 	})
 })
