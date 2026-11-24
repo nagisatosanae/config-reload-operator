@@ -189,6 +189,21 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "configreloadpolicy")
 		os.Exit(1)
 	}
+	// The webhook is on when it has a certificate to serve with. Without one
+	// the manager runs as before, and the reconciler does all the work.
+	if len(webhookCertPath) > 0 {
+		if err := (&controller.DeploymentInjector{
+			Client: mgr.GetClient(),
+		}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "deployment")
+			os.Exit(1)
+		}
+		// The Pod is not ready until the webhook server is listening.
+		if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+			setupLog.Error(err, "Failed to set up webhook ready check")
+			os.Exit(1)
+		}
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

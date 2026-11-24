@@ -1,0 +1,99 @@
+{{- if .Values.webhook.enabled }}
+{{- $fullname := include "config-reload-operator.fullname" . }}
+{{- $service := printf "%s-webhook" $fullname }}
+{{- $secret := printf "%s-webhook-cert" $fullname }}
+{{- /*
+The API server only talks to a webhook over TLS, and it must know the CA
+that signed the webhook's certificate. Helm makes both here, so nothing
+else has to be installed. An upgrade keeps the certificate that is already
+in the cluster, so the CA below and the certificate in the Pod always match.
+*/}}
+{{- $caCert := "" }}
+{{- $tlsCert := "" }}
+{{- $tlsKey := "" }}
+{{- $current := lookup "v1" "Secret" .Release.Namespace $secret }}
+{{- if and $current $current.data (hasKey $current.data "ca.crt") }}
+{{- $caCert = index $current.data "ca.crt" }}
+{{- $tlsCert = index $current.data "tls.crt" }}
+{{- $tlsKey = index $current.data "tls.key" }}
+{{- else }}
+{{- $names := list (printf "%s.%s.svc" $service .Release.Namespace) (printf "%s.%s.svc.cluster.local" $service .Release.Namespace) }}
+{{- $ca := genCA (printf "%s-ca" $fullname) 3650 }}
+{{- $cert := genSignedCert (index $names 0) nil $names 3650 $ca }}
+{{- $caCert = b64enc $ca.Cert }}
+{{- $tlsCert = b64enc $cert.Cert }}
+{{- $tlsKey = b64enc $cert.Key }}
+{{- end }}
+# The certificate the webhook server shows to the API server.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secret }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "config-reload-operator.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  ca.crt: {{ $caCert }}
+  tls.crt: {{ $tlsCert }}
+  tls.key: {{ $tlsKey }}
+---
+# The API server reaches the webhook through this Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $service }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "config-reload-operator.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "config-reload-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+      protocol: TCP
+---
+# Tells the API server to send a Deployment to the webhook before it is
+# stored, but only a Deployment with the annotation
+# reload.nagisatosanae.github.io/inject: "true". The annotation and the path
+# are also in internal/controller/deployment_webhook.go. Keep them the same.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "config-reload-operator.labels" . | nindent 4 }}
+webhooks:
+  - name: inject.reload.nagisatosanae.github.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ $service }}
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-apps-v1-deployment
+        port: 443
+      caBundle: {{ $caCert }}
+    rules:
+      - apiGroups:
+          - apps
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - deployments
+        scope: Namespaced
+    matchConditions:
+      - name: has-inject-annotation
+        expression: >-
+          has(object.metadata.annotations) &&
+          'reload.nagisatosanae.github.io/inject' in object.metadata.annotations &&
+          object.metadata.annotations['reload.nagisatosanae.github.io/inject'] == 'true'
+{{- end }}

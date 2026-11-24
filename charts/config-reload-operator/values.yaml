@@ -19,6 +19,20 @@ resources:
     cpu: 10m
     memory: 64Mi
 
+# The admission webhook sets the watcher settings on a Deployment while it is
+# being created or updated, so its first Pods already have them. Without the
+# webhook the controller does this a moment later, and the Pods are replaced
+# one more time. The webhook only looks at a Deployment with the annotation
+# reload.nagisatosanae.github.io/inject: "true".
+webhook:
+  enabled: true
+  # What the API server does when it cannot reach the webhook. Ignore lets
+  # the Deployment through, and the controller fixes it afterwards. Fail
+  # rejects the Deployment.
+  failurePolicy: Ignore
+  # How many seconds the API server waits for the webhook.
+  timeoutSeconds: 5
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

@@ -26,6 +26,9 @@ kind: Deployment
 metadata:
   name: nginx-demo
   namespace: demo
+  annotations:
+    # Lets the webhook set the watcher settings while this is created.
+    reload.nagisatosanae.github.io/inject: "true"
 spec:
   replicas: 1
   selector:
