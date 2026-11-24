@@ -349,14 +349,14 @@ var _ = Describe("Pod webhook", func() {
 		side := newPolicy("pair-helper", "pair")
 		side.Spec.ContainerName = helperContainer
 		side.Spec.ConfigMapRef.Name = "helper-config"
-		side.Spec.MountPath = "/etc/helper"
+		side.Spec.MountPath = helperMountPath
 		create(side)
 		pod := newPod("pair")
 		create(pod)
 
 		got := stored(pod)
 		Expect(addedVolumes(got)).To(HaveLen(2))
-		Expect(got.Spec.Containers[0].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: "/etc/helper"}))
+		Expect(got.Spec.Containers[0].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: helperMountPath}))
 		Expect(got.Spec.Containers[1].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: mountPath}))
 		Expect(got.Annotations).To(HaveKeyWithValue(InjectedAnnotation, "pair-app@1,pair-helper@1"))
 	})

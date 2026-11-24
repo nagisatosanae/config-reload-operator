@@ -32,13 +32,16 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // ConfigReloadPolicyReconciler reports the state of a ConfigReloadPolicy.
 //
 // It writes nothing but the status of the policy. The settings are put on
-// new Pods by the webhook, see PodInjector. A Deployment is only read, and
-// a Pod that runs is never touched.
+// new Pods by the webhook, see PodInjector. A Deployment and its Pods are
+// only read, and a Pod that runs is never touched.
 type ConfigReloadPolicyReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -48,9 +51,14 @@ const (
 	// conditionReady is the one condition this controller reports.
 	conditionReady = "Ready"
 
-	// retryAfter is how long to wait before looking again when something
-	// the policy points at is missing or wrong.
+	// retryAfter is how long to wait before looking again when the policy
+	// is not Ready.
 	retryAfter = 30 * time.Second
+
+	// resyncAfter is how long a policy that is Ready goes without a look.
+	// A Pod that comes or goes wakes the controller up at once. A change of
+	// the Deployment does not, so it is seen this late at the latest.
+	resyncAfter = 5 * time.Minute
 
 	// oldFinalizer was put on policies by version 0.1, which took its env
 	// off the Deployment before a policy could go. Nothing is taken off any
@@ -60,24 +68,33 @@ const (
 
 // Reasons shown in the Ready condition.
 const (
-	reasonAccepted          = "Accepted"
+	// Ready is True.
+	reasonInjected = "Injected" // every Pod carries the settings
+	reasonAccepted = "Accepted" // there are no Pods now, new ones get the settings
+
+	// Ready is False.
+	reasonNotInjected       = "NotInjected" // a Pod runs without the settings
+	reasonOutdated          = "Outdated"    // a Pod carries the settings from before a change
 	reasonWorkloadNotFound  = "WorkloadNotFound"
 	reasonContainerNotFound = "ContainerNotFound"
 	reasonNotOptedIn        = "NotOptedIn"
 )
 
+// replaceHint tells the user how a Pod gets the settings of today.
+const replaceHint = "They get them when they are replaced, for example by: kubectl rollout restart deployment/"
+
 // +kubebuilder:rbac:groups=reload.nagisatosanae.github.io,resources=configreloadpolicies,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=reload.nagisatosanae.github.io,resources=configreloadpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
 // Reconcile looks at what the policy points at and writes the result into
-// the Ready condition.
+// the status of the policy.
 //
-// Ready is True when new Pods of the Deployment will get the settings: the
-// Deployment is there, it has the named container, and its Pod template
-// asks for the settings with the annotation. Otherwise the reason and the
-// message say what is missing. Nothing else is written, so it is safe to
-// run again and again.
+// It counts the Pods of the Deployment that ask for the settings, and how
+// many of them carry the settings of the policy as it is now. Ready is True
+// when all of them do. Otherwise the reason and the message say what is
+// missing. Nothing else is written, so it is safe to run again and again.
 func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// 1. Read the policy. If it is gone, there is nothing to do.
 	var policy reloadv1alpha1.ConfigReloadPolicy
@@ -105,16 +122,14 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, err
 		}
 		msg := fmt.Sprintf("Deployment %q was not found", depKey.Name)
-		return ctrl.Result{RequeueAfter: retryAfter},
-			r.setReady(ctx, &policy, metav1.ConditionFalse, reasonWorkloadNotFound, msg)
+		return r.report(ctx, &policy, counts{}, metav1.ConditionFalse, reasonWorkloadNotFound, msg)
 	}
 	template := &dep.Spec.Template
 
 	// 4. The container must be in the Pod template.
 	if containerIndex(&template.Spec, policy.Spec.ContainerName) < 0 {
 		msg := fmt.Sprintf("Deployment %q has no container named %q", dep.Name, policy.Spec.ContainerName)
-		return ctrl.Result{RequeueAfter: retryAfter},
-			r.setReady(ctx, &policy, metav1.ConditionFalse, reasonContainerNotFound, msg)
+		return r.report(ctx, &policy, counts{}, metav1.ConditionFalse, reasonContainerNotFound, msg)
 	}
 
 	// 5. The Pod template must ask for the settings. Without the annotation
@@ -122,13 +137,103 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if !asksForSettings(template.Annotations) {
 		msg := fmt.Sprintf("the Pod template of Deployment %q does not have the annotation %s: \"true\"",
 			dep.Name, InjectAnnotation)
-		return ctrl.Result{RequeueAfter: retryAfter},
-			r.setReady(ctx, &policy, metav1.ConditionFalse, reasonNotOptedIn, msg)
+		return r.report(ctx, &policy, counts{}, metav1.ConditionFalse, reasonNotOptedIn, msg)
 	}
 
-	// 6. Report success.
-	msg := fmt.Sprintf("new Pods of Deployment %q get the settings for container %q", dep.Name, policy.Spec.ContainerName)
-	return ctrl.Result{}, r.setReady(ctx, &policy, metav1.ConditionTrue, reasonAccepted, msg)
+	// 6. Count the Pods, and say what was found.
+	n, err := r.countPods(ctx, &dep, &policy)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	switch missing := n.pods - n.current - n.outdated; {
+	case n.pods == 0:
+		msg := fmt.Sprintf("Deployment %q has no Pods now. New Pods get the settings for container %q",
+			dep.Name, policy.Spec.ContainerName)
+		return r.report(ctx, &policy, n, metav1.ConditionTrue, reasonAccepted, msg)
+	case missing > 0:
+		msg := fmt.Sprintf("%d of %d Pods of Deployment %q run without the settings. %s%s",
+			missing, n.pods, dep.Name, replaceHint, dep.Name)
+		return r.report(ctx, &policy, n, metav1.ConditionFalse, reasonNotInjected, msg)
+	case n.outdated > 0:
+		msg := fmt.Sprintf("%d of %d Pods of Deployment %q carry the settings from before the policy was changed. %s%s",
+			n.outdated, n.pods, dep.Name, replaceHint, dep.Name)
+		return r.report(ctx, &policy, n, metav1.ConditionFalse, reasonOutdated, msg)
+	default:
+		msg := fmt.Sprintf("%d of %d Pods of Deployment %q carry the settings", n.current, n.pods, dep.Name)
+		return r.report(ctx, &policy, n, metav1.ConditionTrue, reasonInjected, msg)
+	}
+}
+
+// counts is what countPods found.
+type counts struct {
+	pods     int32 // Pods of the Deployment that ask for the settings
+	current  int32 // of those, the ones that carry the settings of the policy as it is now
+	outdated int32 // of those, the ones that carry the settings of an earlier version of the policy
+}
+
+// countPods looks at the Pods of the Deployment. Only their metadata is
+// read: the annotation that asks for the settings, and the mark the webhook
+// left. A Pod that is being deleted is not counted.
+func (r *ConfigReloadPolicyReconciler) countPods(
+	ctx context.Context, dep *appsv1.Deployment, policy *reloadv1alpha1.ConfigReloadPolicy,
+) (counts, error) {
+	selector, err := metav1.LabelSelectorAsSelector(dep.Spec.Selector)
+	if err != nil {
+		return counts{}, err
+	}
+	var pods metav1.PartialObjectMetadataList
+	pods.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("PodList"))
+	err = r.List(ctx, &pods, client.InNamespace(dep.Namespace), client.MatchingLabelsSelector{Selector: selector})
+	if err != nil {
+		return counts{}, err
+	}
+
+	var n counts
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if !pod.DeletionTimestamp.IsZero() || !asksForSettings(pod.Annotations) {
+			continue
+		}
+		// The selector can also match Pods that are not made by this
+		// Deployment.
+		if owner, err := deploymentOf(pod); err != nil || owner != dep.Name {
+			continue
+		}
+		n.pods++
+		switch generation, injected := injectedGeneration(pod.Annotations, policy.Name); {
+		case !injected:
+		case generation == policy.Generation:
+			n.current++
+		default:
+			n.outdated++
+		}
+	}
+	return n, nil
+}
+
+// policiesForPod returns the policies that count this Pod. The controller
+// uses it to look at a policy again when one of its Pods comes or goes.
+func (r *ConfigReloadPolicyReconciler) policiesForPod(ctx context.Context, pod client.Object) []reconcile.Request {
+	if !asksForSettings(pod.GetAnnotations()) {
+		return nil
+	}
+	deployment, err := deploymentOf(pod)
+	if err != nil {
+		return nil
+	}
+	var policies reloadv1alpha1.ConfigReloadPolicyList
+	if err := r.List(ctx, &policies, client.InNamespace(pod.GetNamespace())); err != nil {
+		logf.FromContext(ctx).Error(err, "could not read the policies for a Pod",
+			"namespace", pod.GetNamespace(), "pod", pod.GetName())
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range policies.Items {
+		if policies.Items[i].Spec.WorkloadRef.Name == deployment {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&policies.Items[i])})
+		}
+	}
+	return requests
 }
 
 // containerIndex returns the position of the named container, or -1.
@@ -141,13 +246,20 @@ func containerIndex(podSpec *corev1.PodSpec, name string) int {
 	return -1
 }
 
-// setReady writes the Ready condition, but only when it really changes.
-func (r *ConfigReloadPolicyReconciler) setReady(
+// report writes the Ready condition and the Pod counts, but only when
+// something really changes. The result says when to look again.
+func (r *ConfigReloadPolicyReconciler) report(
 	ctx context.Context,
 	policy *reloadv1alpha1.ConfigReloadPolicy,
+	n counts,
 	status metav1.ConditionStatus,
 	reason, message string,
-) error {
+) (ctrl.Result, error) {
+	result := ctrl.Result{RequeueAfter: retryAfter}
+	if status == metav1.ConditionTrue {
+		result.RequeueAfter = resyncAfter
+	}
+
 	changed := meta.SetStatusCondition(&policy.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,
 		Status:             status,
@@ -155,16 +267,22 @@ func (r *ConfigReloadPolicyReconciler) setReady(
 		Message:            message,
 		ObservedGeneration: policy.Generation,
 	})
-	if !changed {
-		return nil
+	if policy.Status.Pods != n.pods || policy.Status.InjectedPods != n.current {
+		policy.Status.Pods, policy.Status.InjectedPods = n.pods, n.current
+		changed = true
 	}
-	return r.Status().Update(ctx, policy)
+	if !changed {
+		return result, nil
+	}
+	return result, r.Status().Update(ctx, policy)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ConfigReloadPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&reloadv1alpha1.ConfigReloadPolicy{}).
+		// Only the metadata of Pods is kept in memory.
+		WatchesMetadata(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.policiesForPod)).
 		Named("configreloadpolicy").
 		Complete(r)
 }

@@ -90,6 +90,35 @@ func TestDeploymentOf(t *testing.T) {
 	}
 }
 
+func TestInjectedGeneration(t *testing.T) {
+	tests := []struct {
+		name  string
+		mark  string
+		want  int64
+		found bool
+	}{
+		{name: "no mark at all"},
+		{name: "the policy alone", mark: "web-reload@3", want: 3, found: true},
+		{name: "the policy among others", mark: "another@1,web-reload@7", want: 7, found: true},
+		{name: "only another policy", mark: "another@1"},
+		{name: "a policy whose name starts the same", mark: "web-reload-2@4"},
+		{name: "a mark without a generation", mark: "web-reload"},
+		{name: "a generation that is not a number", mark: "web-reload@new"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			annotations := map[string]string{}
+			if tc.mark != "" {
+				annotations[InjectedAnnotation] = tc.mark
+			}
+			got, found := injectedGeneration(annotations, "web-reload")
+			if found != tc.found || (found && got != tc.want) {
+				t.Fatalf("got (%d, %v), want (%d, %v)", got, found, tc.want, tc.found)
+			}
+		})
+	}
+}
+
 func TestEnsureMountAddsAVolumeWithANewName(t *testing.T) {
 	pol := newPolicy("web-reload", "web")
 	pod := newPod("web")

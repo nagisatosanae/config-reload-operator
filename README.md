@@ -329,7 +329,7 @@ downloads the two binaries the first time.
 | Part | Tests | What they cover |
 |---|---|---|
 | watcher | 25 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, the start script, a watch process that fails without hurting the app. |
-| controller | 58 envtest cases and 5 Go tests | Defaults and bad values at the API server, what the webhook puts on a new Pod, every reason a Pod is rejected and the same Pods under Ignore, the same check when a Deployment is applied, every not-ready reason, nothing written to a Deployment or to a Pod that runs. |
+| controller | 63 envtest cases and 6 Go tests | Defaults and bad values at the API server, what the webhook puts on a new Pod, every reason a Pod is rejected and the same Pods under Ignore, the same check when a Deployment is applied, the Pod counts in the status, every not-ready reason, nothing written to a Deployment or to a Pod that runs. |
 
 GitHub Actions runs the tests and the linter on every push.
 

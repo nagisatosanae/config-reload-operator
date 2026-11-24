@@ -41,6 +41,7 @@ const (
 	testNamespace   = "default"
 	appContainer    = "nginx"
 	helperContainer = "helper"
+	helperMountPath = "/etc/helper"
 	// otherContainer is a name no container has.
 	otherContainer = "sidecar"
 	mountPath      = "/etc/nginx/conf.d"
@@ -152,24 +153,126 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(pol.Spec.Reload.ValidateCommand).To(BeEmpty())
 	})
 
-	It("reports Ready when the Deployment asks for the settings", func() {
+	It("is Ready before there are Pods, when the Deployment asks for the settings", func() {
 		create(newDeployment("web"))
 		create(newPolicy("web-reload", "web"))
 
 		result, err := runReconcile("web-reload")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(ctrl.Result{}))
+		Expect(result.RequeueAfter).To(Equal(resyncAfter))
 
 		c := readyCondition("web-reload")
 		Expect(c.Status).To(Equal(metav1.ConditionTrue))
 		Expect(c.Reason).To(Equal(reasonAccepted))
 		Expect(c.ObservedGeneration).To(Equal(int64(1)))
+		Expect(getPolicy("web-reload").Status.Pods).To(BeZero())
 	})
 
-	It("never writes the Deployment, and writes the status only when it changes", func() {
+	It("counts the Pods that carry the settings", func() {
+		create(newDeployment("full"))
+		create(newPolicy("full-reload", "full"))
+		create(newPod("full"))
+		create(newPod("full"))
+
+		_, err := runReconcile("full-reload")
+		Expect(err).NotTo(HaveOccurred())
+
+		status := getPolicy("full-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(2))
+		Expect(status.InjectedPods).To(BeEquivalentTo(2))
+		c := readyCondition("full-reload")
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Reason).To(Equal(reasonInjected))
+	})
+
+	It("reports a Pod that runs without the settings", func() {
+		create(newDeployment("partial"))
+		// This Pod starts before the policy is there. The failure policy is
+		// Ignore in these specs, so it starts as it was written.
+		create(newPod("partial"))
+		create(newPolicy("partial-reload", "partial"))
+		create(newPod("partial"))
+
+		result, err := runReconcile("partial-reload")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(retryAfter))
+
+		status := getPolicy("partial-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(2))
+		Expect(status.InjectedPods).To(BeEquivalentTo(1))
+		c := readyCondition("partial-reload")
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal(reasonNotInjected))
+		Expect(c.Message).To(ContainSubstring("1 of 2 Pods"))
+	})
+
+	It("reports Pods that carry the settings from before the policy was changed", func() {
+		create(newDeployment("aged"))
+		create(newPolicy("aged-reload", "aged"))
+		create(newPod("aged"))
+
+		pol := getPolicy("aged-reload")
+		pol.Spec.Reload.Signal = sigUSR1
+		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
+		_, err := runReconcile("aged-reload")
+		Expect(err).NotTo(HaveOccurred())
+
+		status := getPolicy("aged-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(1))
+		Expect(status.InjectedPods).To(BeZero())
+		Expect(readyCondition("aged-reload").Reason).To(Equal(reasonOutdated))
+
+		By("a new Pod gets the new settings, the old one is still reported")
+		create(newPod("aged"))
+		_, err = runReconcile("aged-reload")
+		Expect(err).NotTo(HaveOccurred())
+		status = getPolicy("aged-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(2))
+		Expect(status.InjectedPods).To(BeEquivalentTo(1))
+		Expect(readyCondition("aged-reload").Reason).To(Equal(reasonOutdated))
+	})
+
+	It("counts only Pods of its own Deployment that ask for the settings and are not on their way out", func() {
+		create(newDeployment("picky"))
+		create(newPolicy("picky-reload", "picky"))
+		create(newPod("picky"))
+
+		By("a Pod with the same labels that another Deployment made")
+		stranger := newPod("picky")
+		stranger.OwnerReferences[0].Name = "elsewhere-" + podHash
+		create(stranger)
+
+		By("a Pod that does not ask for the settings")
+		plain := newPod("picky")
+		plain.Annotations = nil
+		create(plain)
+
+		By("a Pod that is being deleted")
+		leaving := newPod("picky")
+		leaving.Finalizers = []string{"example.com/hold"}
+		create(leaving)
+		Expect(k8sClient.Delete(ctx, leaving)).To(Succeed())
+		DeferCleanup(func() {
+			held := stored(leaving)
+			held.Finalizers = nil
+			Expect(k8sClient.Update(ctx, held)).To(Succeed())
+		})
+
+		_, err := runReconcile("picky-reload")
+		Expect(err).NotTo(HaveOccurred())
+		status := getPolicy("picky-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(1))
+		Expect(status.InjectedPods).To(BeEquivalentTo(1))
+		Expect(readyCondition("picky-reload").Reason).To(Equal(reasonInjected))
+	})
+
+	It("never writes the Deployment or a Pod, and writes the status only when it changes", func() {
 		create(newDeployment("idle"))
 		depVersion := getDeployment("idle").ResourceVersion
 		create(newPolicy("idle-reload", "idle"))
+		pod := newPod("idle")
+		create(pod)
+		podVersion := stored(pod).ResourceVersion
 		_, err := runReconcile("idle-reload")
 		Expect(err).NotTo(HaveOccurred())
 		polVersion := getPolicy("idle-reload").ResourceVersion
@@ -179,7 +282,29 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		Expect(getDeployment("idle").ResourceVersion).To(Equal(depVersion), "the Deployment was written")
+		Expect(stored(pod).ResourceVersion).To(Equal(podVersion), "the Pod was written")
 		Expect(getPolicy("idle-reload").ResourceVersion).To(Equal(polVersion), "the status was written again")
+	})
+
+	It("knows which policies to look at again when a Pod comes or goes", func() {
+		create(newPolicy("wake-app", "wake"))
+		side := newPolicy("wake-helper", "wake")
+		side.Spec.ContainerName = helperContainer
+		side.Spec.MountPath = helperMountPath
+		create(side)
+		create(newPolicy("other-reload", "other"))
+		r := &ConfigReloadPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+		requests := r.policiesForPod(ctx, newPod("wake"))
+		names := make([]string, 0, len(requests))
+		for _, request := range requests {
+			names = append(names, request.Name)
+		}
+		Expect(names).To(ConsistOf("wake-app", "wake-helper"))
+
+		plain := newPod("wake")
+		plain.Annotations = nil
+		Expect(r.policiesForPod(ctx, plain)).To(BeEmpty(), "a Pod that does not ask wakes nobody up")
 	})
 
 	DescribeTable("reports what is wrong in the Ready condition and looks again later",

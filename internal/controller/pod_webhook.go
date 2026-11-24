@@ -203,13 +203,28 @@ func (p *PodInjector) injectFor(ctx context.Context, namespace, deployment strin
 // A Deployment makes its Pods through a ReplicaSet named
 // "<deployment>-<hash>", and gives the Pods the same hash in a label. So the
 // name can be read from the Pod, without a call to the API server.
-func deploymentOf(pod *corev1.Pod) (string, error) {
+func deploymentOf(pod metav1.Object) (string, error) {
 	owner := metav1.GetControllerOf(pod)
-	hash := pod.Labels[appsv1.DefaultDeploymentUniqueLabelKey]
+	hash := pod.GetLabels()[appsv1.DefaultDeploymentUniqueLabelKey]
 	if owner == nil || owner.Kind != "ReplicaSet" || hash == "" || !strings.HasSuffix(owner.Name, "-"+hash) {
 		return "", errors.New("it does not belong to a Deployment, and only Pods of a Deployment can get them")
 	}
 	return strings.TrimSuffix(owner.Name, "-"+hash), nil
+}
+
+// injectedGeneration reads the mark the webhook left on a Pod. It returns
+// the generation of the named policy whose settings the Pod carries. The
+// second result is false when the Pod does not carry that policy at all.
+func injectedGeneration(annotations map[string]string, policy string) (int64, bool) {
+	for entry := range strings.SplitSeq(annotations[InjectedAnnotation], ",") {
+		name, generation, found := strings.Cut(entry, "@")
+		if !found || name != policy {
+			continue
+		}
+		n, err := strconv.ParseInt(generation, 10, 64)
+		return n, err == nil
+	}
+	return 0, false
 }
 
 // injectPolicy puts the settings of one policy on the Pod.
