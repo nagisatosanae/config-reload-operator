@@ -303,7 +303,7 @@ downloads the two binaries the first time.
 | Part | Tests | What they cover |
 |---|---|---|
 | watcher | 19 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, cleaning up leftover child processes. |
-| controller | 20 envtest cases and 3 Go tests | Defaults and bad values at the API server, settings written once and not again, your own environment variables kept, every not-ready reason, clean-up when a policy is deleted. |
+| controller | 27 envtest cases and 4 Go tests | Defaults and bad values at the API server, settings written once and not again, your own environment variables kept, every not-ready reason, clean-up when a policy is deleted, the webhook when a Deployment is created or updated. |
 
 GitHub Actions runs the tests and the linter on every push.
 

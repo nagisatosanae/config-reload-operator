@@ -18,19 +18,27 @@ package controller
 
 import (
 	"context"
+	"crypto/tls"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	admissionv1 "k8s.io/api/admissionregistration/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -74,6 +82,10 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
+		// Register the Deployment webhook with the API server.
+		WebhookInstallOptions: envtest.WebhookInstallOptions{
+			MutatingWebhooks: []*admissionv1.MutatingWebhookConfiguration{injectorWebhookConfig()},
+		},
 	}
 
 	// Retrieve the first found binary directory to allow running tests from IDEs
@@ -89,6 +101,31 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	By("serving the webhook, so the API server can call it")
+	install := &testEnv.WebhookInstallOptions
+	server := webhook.NewServer(webhook.Options{
+		Host:    install.LocalServingHost,
+		Port:    install.LocalServingPort,
+		CertDir: install.LocalServingCertDir,
+	})
+	server.Register(injectPath,
+		admission.WithDefaulter[*appsv1.Deployment](scheme.Scheme, &DeploymentInjector{Client: k8sClient}))
+	go func() {
+		defer GinkgoRecover()
+		Expect(server.Start(ctx)).To(Succeed())
+	}()
+
+	// Wait until the server answers. A Deployment made before that would fail.
+	address := net.JoinHostPort(install.LocalServingHost, strconv.Itoa(install.LocalServingPort))
+	Eventually(func() error {
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, "tcp", address,
+			&tls.Config{InsecureSkipVerify: true}) //nolint:gosec // a test server with a test certificate
+		if err != nil {
+			return err
+		}
+		return conn.Close()
+	}).Should(Succeed())
 })
 
 var _ = AfterSuite(func() {
