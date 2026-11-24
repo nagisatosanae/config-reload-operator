@@ -80,8 +80,9 @@ const (
 	reasonNotOptedIn        = "NotOptedIn"
 )
 
-// replaceHint tells the user how a Pod gets the settings of today.
-const replaceHint = "They get them when they are replaced, for example by: kubectl rollout restart deployment/"
+// replaceHint tells the user how a Pod gets the settings of the policy as it
+// is now. It ends with the name of the Deployment.
+const replaceHint = "They get the current settings when they are replaced, for example by: kubectl rollout restart deployment/"
 
 // +kubebuilder:rbac:groups=reload.nagisatosanae.github.io,resources=configreloadpolicies,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=reload.nagisatosanae.github.io,resources=configreloadpolicies/status,verbs=get;update;patch

@@ -239,13 +239,13 @@ spec:
               injectedPods:
                 description: |-
                   injectedPods is how many of those Pods carry the settings of this
-                  policy.
+                  policy as it is now.
                 format: int32
                 type: integer
               pods:
                 description: |-
                   pods is the number of Pods of the workload that this policy applies
-                  to.
+                  to. A zero is written out, so kubectl shows 0 and not an empty column.
                 format: int32
                 type: integer
             type: object

@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -221,6 +222,14 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(status.Pods).To(BeEquivalentTo(1))
 		Expect(status.InjectedPods).To(BeZero())
 		Expect(readyCondition("aged-reload").Reason).To(Equal(reasonOutdated))
+
+		By("the zero is stored, so kubectl shows 0 and not an empty column")
+		raw := &unstructured.Unstructured{}
+		raw.SetGroupVersionKind(reloadv1alpha1.SchemeGroupVersion.WithKind("ConfigReloadPolicy"))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "aged-reload", Namespace: testNamespace}, raw)).To(Succeed())
+		_, found, err := unstructured.NestedInt64(raw.Object, "status", "injectedPods")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue(), "status.injectedPods is not in the stored object")
 
 		By("a new Pod gets the new settings, the old one is still reported")
 		create(newPod("aged"))

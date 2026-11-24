@@ -129,14 +129,14 @@ type ConfigReloadPolicyStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// pods is the number of Pods of the workload that this policy applies
-	// to.
+	// to. A zero is written out, so kubectl shows 0 and not an empty column.
 	// +optional
-	Pods int32 `json:"pods,omitempty"`
+	Pods int32 `json:"pods"`
 
 	// injectedPods is how many of those Pods carry the settings of this
-	// policy.
+	// policy as it is now.
 	// +optional
-	InjectedPods int32 `json:"injectedPods,omitempty"`
+	InjectedPods int32 `json:"injectedPods"`
 }
 
 // +kubebuilder:object:root=true
