@@ -48,7 +48,7 @@ metadata:
     {{- include "config-reload-operator.labels" . | nindent 4 }}
 spec:
   selector:
-    {{- include "config-reload-operator.selectorLabels" . | nindent 4 }}
+    {{- include "config-reload-operator.webhookSelectorLabels" . | nindent 4 }}
   ports:
     - name: webhook
       port: 443

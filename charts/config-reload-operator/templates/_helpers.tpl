@@ -21,6 +21,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
+Labels that pick the webhook Pods. The name is another one than for the
+controller Pods, so neither Deployment selects the Pods of the other.
+*/}}
+{{- define "config-reload-operator.webhookSelectorLabels" -}}
+app.kubernetes.io/name: {{ .Chart.Name }}-webhook
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
 Labels for every resource.
 */}}
 {{- define "config-reload-operator.labels" -}}

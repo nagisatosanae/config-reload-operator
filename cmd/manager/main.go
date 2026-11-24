@@ -59,6 +59,7 @@ func main() {
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var webhookPort int
 	var webhookFailurePolicy string
+	var runController bool
 	var enableLeaderElection bool
 	var probeAddr string
 	var secureMetrics bool
@@ -67,6 +68,9 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.BoolVar(&runController, "controller", true,
+		"Run the controller, which reports the state of the policies. "+
+			"Turn it off in a Pod that only serves the webhook.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -94,6 +98,14 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// The controller and the webhook do not need each other. The chart runs
+	// them as two Deployments from this one binary: one with the controller
+	// only, one with the webhook only.
+	if !runController && len(webhookCertPath) == 0 {
+		setupLog.Error(nil, "Nothing to run: the controller is off and the webhook has no certificate")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -187,12 +199,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.ConfigReloadPolicyReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "configreloadpolicy")
-		os.Exit(1)
+	if runController {
+		if err := (&controller.ConfigReloadPolicyReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create controller", "controller", "configreloadpolicy")
+			os.Exit(1)
+		}
 	}
 	// The webhook is on when it has a certificate to serve with. It is the
 	// part that puts the watcher settings on new Pods. Without it the manager

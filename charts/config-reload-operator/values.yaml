@@ -24,8 +24,16 @@ resources:
 # with the annotation reload.nagisatosanae.github.io/inject: "true", which you
 # put on the Pod template of your Deployment. Without the webhook no Pod gets
 # the settings.
+#
+# It runs as a Deployment of its own, from the same image as the controller.
+# So the controller can be down while new Pods still get their settings, and
+# the other way round.
 webhook:
   enabled: true
+  # Number of webhook Pods. Every one of them answers requests. Keep it at 2
+  # or more with failurePolicy Fail: while no webhook Pod is up, no Pod with
+  # the annotation can be created.
+  replicas: 2
   # What happens to a Pod that has the annotation but cannot get the settings:
   # the webhook cannot be reached, no policy points at its Deployment, or the
   # policy cannot be applied to it. Fail rejects the Pod, and the message says

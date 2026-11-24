@@ -30,6 +30,7 @@ kubectl get pods -n config-reload-operator-system
 | `imagePullSecrets` | `[]` | Secrets for a private registry. |
 | `resources` | requests 10m / 64Mi, limits 500m / 128Mi | CPU and memory of the controller. |
 | `webhook.enabled` | `true` | Installs the admission webhook. It puts the watcher's settings on a Pod while it is created. Without it no Pod gets them. |
+| `webhook.replicas` | `2` | Number of webhook Pods. The webhook runs as its own Deployment, and every Pod of it answers requests. |
 | `webhook.failurePolicy` | `Fail` | What happens to a Pod that has the annotation but cannot get the settings: the webhook cannot be reached, no policy points at its Deployment, or the policy cannot be applied. `Fail` rejects the Pod and says why. `Ignore` lets it start as you wrote it. |
 | `webhook.timeoutSeconds` | `5` | How long the API server waits for the webhook. |
 | `nodeSelector`, `tolerations`, `affinity` | empty | Where the controller Pods may run. |

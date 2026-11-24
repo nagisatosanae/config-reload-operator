@@ -1,12 +1,12 @@
-The controller is starting in namespace {{ .Release.Namespace }}:
+The controller{{ if .Values.webhook.enabled }} and the webhook are{{ else }} is{{ end }} starting in namespace {{ .Release.Namespace }}:
 
   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
 
-Next, create a ConfigReloadPolicy next to a Deployment whose image has the
-watcher in it. See docs/images.md in the repository for the image part.
+Next, create a ConfigReloadPolicy for a Deployment whose image has the
+watcher in it, and put the annotation on the Pod template of that
+Deployment. See docs/images.md in the repository for the image part.
 
   kubectl get configreloadpolicies -A
 
-Before you uninstall, delete your ConfigReloadPolicy objects. The controller
-takes its settings off the Deployments when a policy is deleted, and it can
-only do that while it is running.
+Pods that run keep their settings when a policy is deleted and when this
+chart is uninstalled. Only new Pods are affected.
