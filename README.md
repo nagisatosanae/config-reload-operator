@@ -45,12 +45,15 @@ There are two parts.
 - The **controller** reads `ConfigReloadPolicy` objects. A policy names a
   Deployment, a container and a ConfigMap. The controller checks them, finds
   where the ConfigMap is mounted, and puts the watcher's settings on the
-  container as `WATCH_*` environment variables.
+  container as `WATCH_*` environment variables. A webhook in the same binary
+  does this while a Deployment is being created, so its first Pods already
+  have the settings.
 
 ```text
 Setup, once:
 
   ConfigReloadPolicy --> controller --> WATCH_* env on the Deployment
+  a new Deployment   --> webhook    --> the same env, before it is stored
 
 Every config change after that:
 
@@ -65,6 +68,9 @@ Every config change after that:
 The controller is not on the reload path. Reloads keep working while the
 controller is down. The watcher never talks to the Kubernetes API, so app
 Pods need no extra permissions.
+
+The webhook is only a shortcut. When it cannot be reached, the Deployment
+is still accepted, and the controller sets the env a moment later.
 
 ## What is better now
 
@@ -109,24 +115,30 @@ helm upgrade --install config-reload-operator ./charts/config-reload-operator \
 `upgrade --install` installs the chart, or updates it when it is already
 there. So this step is safe to run again.
 
-**2. Start the demo app and add a policy.** The demo is NGINX with the
+**2. Add a policy and start the demo app.** The demo is NGINX with the
 watcher in its image. Its config comes from the ConfigMap `nginx-config`.
+The policy goes in first, so the webhook finds it when the Deployment is
+created.
 
 ```sh
-kubectl apply -f demo/nginx/k8s.yaml
+kubectl create namespace demo --save-config
 kubectl apply -f config/samples/reload_v1alpha1_configreloadpolicy.yaml
-kubectl wait --for=condition=Ready configreloadpolicy/nginx-reload -n demo --timeout=60s
+kubectl apply -f demo/nginx/k8s.yaml
 kubectl rollout status deployment/nginx-demo -n demo
+kubectl wait --for=condition=Ready configreloadpolicy/nginx-reload -n demo --timeout=60s
 kubectl get configreloadpolicies -n demo
 ```
 
 ```text
 NAME           WORKLOAD     READY   REASON       AGE
-nginx-reload   nginx-demo   True    Configured   10s
+nginx-reload   nginx-demo   True    Configured   30s
 ```
 
-The policy puts the watcher's settings on the Deployment, so the Pod is
-replaced one time here. It is not replaced again in the next steps.
+The demo Deployment has the annotation
+`reload.nagisatosanae.github.io/inject: "true"`. So the webhook puts the
+watcher's settings on it while it is created. The Pod starts one time and
+is not replaced in the next steps. The policy becomes ready up to 30
+seconds later, when the controller looks again.
 
 **3. Look at the Pod and its answer.** Remember the Pod name.
 
@@ -282,6 +294,20 @@ working.
 When a policy is not ready, the controller looks again every 30 seconds and
 does not touch the Deployment.
 
+**4. Add the annotation to the Deployment.** This step is optional.
+
+```yaml
+metadata:
+  annotations:
+    reload.nagisatosanae.github.io/inject: "true"
+```
+
+With the annotation, a webhook puts the watcher's settings on the Deployment
+while it is created or updated, so the first Pods already have them. The
+policy must be there before the Deployment. Without the annotation, or when
+the policy comes later, the controller sets them a moment later and the Pods
+are replaced one time.
+
 The Helm chart has its own page:
 [charts/config-reload-operator](charts/config-reload-operator/README.md).
 
@@ -320,9 +346,9 @@ start above. An end-to-end test on a kind cluster is the next thing to add.
 - Only Deployments, and only ConfigMaps mounted as a directory.
 - The kubelet needs up to about a minute to update the files. This is not
   for changes that must apply at once.
-- Creating, changing or deleting a policy replaces the Pod one time, because
-  the settings are environment variables. Config changes after that do not
-  replace it.
+- Changing or deleting a policy replaces the Pod one time, because the
+  settings are environment variables. So does a new policy for a Deployment
+  that is already running. Config changes after that do not replace it.
 - The watcher is PID 1. If it crashes, the container stops. That is why it
   is small and well tested.
 
@@ -343,7 +369,7 @@ own, or for apps where a restart is cheap.
 | Path | What is there |
 |---|---|
 | `api/v1alpha1/` | The `ConfigReloadPolicy` type. |
-| `internal/controller/` | The controller and its tests. |
+| `internal/controller/` | The controller, the webhook and their tests. |
 | `cmd/manager/` | The controller binary. |
 | `cmd/watcher/` | The watcher binary, its tests and its Dockerfile. |
 | `charts/config-reload-operator/` | The Helm chart. |
