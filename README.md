@@ -116,11 +116,13 @@ cd config-reload-operator
 
 ```sh
 helm upgrade --install config-reload-operator ./charts/config-reload-operator \
-  --namespace config-reload-operator-system --create-namespace
+  --namespace config-reload-operator-system --create-namespace --wait
 ```
 
 `upgrade --install` installs the chart, or updates it when it is already
-there. So this step is safe to run again.
+there. So this step is safe to run again. `--wait` comes back when the
+webhook and the controller are ready. Without it the next step can fail,
+because the webhook does not answer yet.
 
 **2. Add a policy and start the demo app.** The demo is NGINX with the
 watcher in its image. Its config comes from the ConfigMap `nginx-config`.

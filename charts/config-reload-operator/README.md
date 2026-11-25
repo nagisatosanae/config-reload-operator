@@ -20,6 +20,11 @@ two webhook Pods:
 kubectl get pods -n config-reload-operator-system
 ```
 
+Until a webhook Pod is ready, the webhook does not answer. With the default
+`webhook.failurePolicy: Fail`, a Deployment with the annotation is turned
+down in that time when you apply it. Add `--wait` to the install and Helm
+comes back only when the Pods are ready.
+
 ## Values
 
 | Key | Default | What it does |

@@ -5,7 +5,7 @@ The project ships three images on GitHub Container Registry.
 | Image | What is inside | Who uses it |
 |---|---|---|
 | `ghcr.io/nagisatosanae/config-reload-operator/watcher` | the `watcher` binary and its start script, in an empty image (about 5 MB) | your own app image, see below |
-| `ghcr.io/nagisatosanae/config-reload-operator/demo-nginx` | NGINX with the watcher next to it | the demo, the Helm example and the e2e test |
+| `ghcr.io/nagisatosanae/config-reload-operator/demo-nginx` | NGINX with the watcher next to it | the demo and the quick start |
 | `ghcr.io/nagisatosanae/config-reload-operator/manager` | the controller and the webhook | the Helm chart |
 
 ## Tags
