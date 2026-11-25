@@ -20,8 +20,10 @@ these reasons.
 - **It has to guess.** A sidecar must find the app by its process name, and
   it must run as the same user or hold a capability to signal it. Inside
   the app's container the watcher simply signals its parent.
-- **It cannot run the check.** The check before a reload is the app's own
-  command, for example `nginx -t`. A sidecar image does not have it.
+- **It does not have the check.** The check before a reload is the app's own
+  command, for example `nginx -t`. A sidecar image does not have it. A
+  sidecar that runs the app's image would, but then the watcher must be in
+  that image, and it has to be built anyway.
 - **Every sidecar costs something in every Pod.** A Pod with a service mesh
   proxy, Dapr and a telemetry collector already runs four containers. Each
   one asks for memory and CPU, times the number of replicas. Each one is an

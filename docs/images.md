@@ -57,6 +57,16 @@ off;"`. This command shows both for any image:
 docker inspect --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' nginx:stable-alpine
 ```
 
+Two things turn the reload off without a message:
+
+- A `command:` in the Deployment replaces `ENTRYPOINT`. The script does not
+  run, so no watcher starts. If you need `command:`, start it with the
+  script and put your app's command after it.
+- A command in `CMD` that runs your app as a child, as `npm start` does,
+  gets the signal in place of your app. The command must be your app, or
+  end with an `exec` of it. `/docker-entrypoint.sh` of the NGINX image does
+  that.
+
 The script starts no watcher until the operator sets `CONFIG_RELOAD_DIR` on
 the container, so the image is safe to run without a policy.
 

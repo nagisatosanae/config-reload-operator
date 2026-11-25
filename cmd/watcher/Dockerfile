@@ -7,8 +7,9 @@
 #   COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.0 \
 #        /watcher /watcher-entrypoint.sh /usr/local/bin/
 #   ENTRYPOINT ["/usr/local/bin/watcher-entrypoint.sh"]
-#   CMD ["nginx", "-g", "daemon off;"]
+#   CMD ["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
 #
+# CMD is what the base image ran before: its ENTRYPOINT followed by its CMD.
 # The script needs a shell in your image. It starts the watcher in the
 # background and then turns into your app, so your app is PID 1.
 #

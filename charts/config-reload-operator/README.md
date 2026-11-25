@@ -6,6 +6,9 @@ each of them needs, and the certificate of the webhook.
 
 ## Install
 
+The cluster must be Kubernetes 1.30 or newer. The webhook uses
+`matchConditions`.
+
 From the repository root:
 
 ```sh
@@ -53,6 +56,11 @@ apply it. It goes through what its Pods will go through, and it is not
 changed. With `Fail` a Deployment whose Pods could not get their settings
 is rejected at once. With `Ignore` it is let in with a warning.
 
+So with `Fail` the policy must be in the cluster before the Deployment. In a
+Helm chart that holds both, make the policy a `pre-install,pre-upgrade`
+hook. Helm creates a custom resource after the Deployments, and the
+Deployment would be rejected.
+
 With `Fail`, no Pod with the annotation can be created while no webhook Pod
 is up. That is why there are two, with a PodDisruptionBudget that keeps one
 of them. Pods that already run are not affected.
@@ -91,7 +99,10 @@ kubectl apply -f charts/config-reload-operator/crds/
 Coming from version 0.1: a policy now needs `spec.mountPath`, and the
 annotation goes on the Pod template. Images must be built again with the
 start script, see `docs/images.md` in the repository. Policies made by 0.1
-carry a finalizer. The controller of this version takes it off.
+carry a finalizer. The controller of this version takes it off, but only
+after you have added `spec.mountPath` to the policy. Until then the policy
+cannot be deleted. The `WATCH_*` env that 0.1 put on your Deployments stays
+there. Nothing reads it any more, so take it off yourself.
 
 ## Uninstall
 

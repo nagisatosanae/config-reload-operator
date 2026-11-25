@@ -64,7 +64,7 @@ When a Pod starts:
 Every config change after that:
 
   the ConfigMap changes
-    --> the kubelet updates the files in the Pod (up to about a minute)
+    --> the kubelet updates the files in the Pod (up to about 90 seconds)
     --> the watcher sees new content and waits for a quiet moment
     --> the watcher runs the check command, for example "nginx -t"
     --> the watcher sends SIGHUP to the app
@@ -72,7 +72,8 @@ Every config change after that:
 ```
 
 Most of the time between a ConfigMap change and the reload is the kubelet.
-It needs up to about a minute to update the files in the Pod.
+It writes the new files when it syncs the Pod again. It does that every 60
+to 90 seconds.
 
 The webhook and the controller are not on the reload path. Reloads keep
 working while both are down. The watcher never talks to the Kubernetes API,
@@ -92,7 +93,7 @@ changed, also not when its policy is deleted. Why it is built this way is in
 | Can run a check command first, such as `nginx -t`. | A broken config is not loaded. The app keeps running with the old one. |
 | The app is PID 1 and the watcher runs next to it. | Stop signals reach the app directly, and the container exits with the app's exit code. A watcher that fails cannot stop the app. |
 | Settings come from a policy, not from the image. | One image works for any path and any signal. |
-| The policy has a status. | A wrong setup shows up as `Ready=False` with a reason, and you see how many Pods carry the settings. |
+| The policy has a status. | A Deployment, a container or an annotation that is missing shows up as `Ready=False` with a reason, and you see how many Pods carry the settings. |
 | Only new Pods get the settings. | Your Deployment is never changed and a Pod that runs is never touched, so there are no surprise rollouts. |
 | Deleting a policy changes nothing that runs. | Pods keep their settings until they are replaced. |
 
@@ -170,9 +171,9 @@ v1
 sed -e 's/Version v1;/Version v2;/' -e 's/"v1/"v2/' demo/nginx/k8s.yaml | kubectl apply -f -
 ```
 
-**5. Follow the watcher log.** The kubelet needs up to about a minute to
-bring the new files into the Pod. This command stays open and shows the
-lines when it happens.
+**5. Follow the watcher log.** The kubelet needs up to about a minute and a
+half to bring the new files into the Pod. This command stays open and shows
+the lines when it happens.
 
 ```sh
 kubectl logs -f -n demo deploy/nginx-demo | grep -E "content changed|sending"
@@ -203,8 +204,8 @@ The answer is `v2`. The Pod name is the same and `RESTARTS` is still 0.
 sed -e 's/Version v1;/Version v2;/' -e 's/"v1/"v2/' -e 's/listen 80;/listen 80/' demo/nginx/k8s.yaml | kubectl apply -f -
 ```
 
-Follow the log again. After up to about a minute it shows that the check
-failed. Press `Ctrl+C` when you see the line.
+Follow the log again. After up to about a minute and a half it shows that
+the check failed. Press `Ctrl+C` when you see the line.
 
 ```sh
 kubectl logs -f -n demo deploy/nginx-demo | grep "check failed"
@@ -377,6 +378,10 @@ start above. An end-to-end test on a kind cluster is the next thing to add.
 - Nothing restarts the watcher. It starts watching again by itself after a
   failure, but when its process is killed, reloads stop until the Pod is
   replaced. `watcher --healthcheck` lets a probe notice.
+- A known bug in 0.2.0: when a policy is deleted and made again under the
+  same name, Pods that still carry the old settings count as `Injected`. A
+  policy that is edited in place is reported right. Only the status is
+  wrong. The Pods are not touched.
 
 You do not need this project for apps that read their config again on their
 own, or for apps where a restart is cheap.
