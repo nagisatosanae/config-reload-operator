@@ -4,7 +4,7 @@
 # image. It is not meant to run by itself. Copy both files into your app
 # image, make the script the start command and give it your app:
 #
-#   COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.0 \
+#   COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.1 \
 #        /watcher /watcher-entrypoint.sh /usr/local/bin/
 #   ENTRYPOINT ["/usr/local/bin/watcher-entrypoint.sh"]
 #   CMD ["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]

@@ -90,20 +90,24 @@ func TestDeploymentOf(t *testing.T) {
 	}
 }
 
-func TestInjectedGeneration(t *testing.T) {
+func TestInjectedMark(t *testing.T) {
+	const uid = "0b9d2c8e-6f1a-4d37-9a55-3c1e7f2b8a40"
 	tests := []struct {
-		name  string
-		mark  string
-		want  int64
-		found bool
+		name    string
+		mark    string
+		wantUID string
+		want    int64
+		found   bool
 	}{
 		{name: "no mark at all"},
-		{name: "the policy alone", mark: "web-reload@3", want: 3, found: true},
-		{name: "the policy among others", mark: "another@1,web-reload@7", want: 7, found: true},
-		{name: "only another policy", mark: "another@1"},
-		{name: "a policy whose name starts the same", mark: "web-reload-2@4"},
+		{name: "the policy alone", mark: "web-reload@3@" + uid, wantUID: uid, want: 3, found: true},
+		{name: "the policy among others", mark: "another@1@" + uid + ",web-reload@7@" + uid, wantUID: uid, want: 7, found: true},
+		{name: "only another policy", mark: "another@1@" + uid},
+		{name: "a policy whose name starts the same", mark: "web-reload-2@4@" + uid},
 		{name: "a mark without a generation", mark: "web-reload"},
-		{name: "a generation that is not a number", mark: "web-reload@new"},
+		{name: "a generation that is not a number", mark: "web-reload@new@" + uid},
+		{name: "a mark of version 0.2.0, without a UID", mark: "web-reload@3", want: 3, found: true},
+		{name: "a mark of version 0.2.0 among others", mark: "another@1,web-reload@7", want: 7, found: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,9 +115,9 @@ func TestInjectedGeneration(t *testing.T) {
 			if tc.mark != "" {
 				annotations[InjectedAnnotation] = tc.mark
 			}
-			got, found := injectedGeneration(annotations, "web-reload")
-			if found != tc.found || (found && got != tc.want) {
-				t.Fatalf("got (%d, %v), want (%d, %v)", got, found, tc.want, tc.found)
+			gotUID, got, found := injectedMark(annotations, "web-reload")
+			if found != tc.found || (found && (got != tc.want || gotUID != tc.wantUID)) {
+				t.Fatalf("got (%q, %d, %v), want (%q, %d, %v)", gotUID, got, found, tc.wantUID, tc.want, tc.found)
 			}
 		})
 	}

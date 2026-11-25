@@ -262,7 +262,7 @@ command your image ran before.
 
 ```dockerfile
 FROM nginx:stable-alpine
-COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.0 \
+COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.1 \
      /watcher /watcher-entrypoint.sh /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/watcher-entrypoint.sh"]
 CMD ["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
@@ -369,7 +369,7 @@ downloads the two binaries the first time.
 | Part | Tests | What they cover |
 |---|---|---|
 | watcher | 25 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, the start script, a watch process that fails without hurting the app. |
-| controller | 63 envtest cases and 6 Go tests | Defaults and bad values at the API server, what the webhook puts on a new Pod, every reason a Pod is rejected and the same Pods under Ignore, the same check when a Deployment is applied, the Pod counts in the status, every not-ready reason, nothing written to a Deployment or to a Pod that runs. |
+| controller | 65 envtest cases and 6 Go tests | Defaults and bad values at the API server, what the webhook puts on a new Pod, every reason a Pod is rejected and the same Pods under Ignore, the same check when a Deployment is applied, the Pod counts in the status, every not-ready reason, nothing written to a Deployment or to a Pod that runs. |
 
 GitHub Actions runs the tests and the linter on every push.
 
@@ -386,10 +386,6 @@ start above. An end-to-end test on a kind cluster is the next thing to add.
 - Nothing restarts the watcher. It starts watching again by itself after a
   failure, but when its process is killed, reloads stop until the Pod is
   replaced. `watcher --healthcheck` lets a probe notice.
-- A known bug in 0.2.0: when a policy is deleted and made again under the
-  same name, Pods that still carry the old settings count as `Injected`. A
-  policy that is edited in place is reported right. Only the status is
-  wrong. The Pods are not touched.
 
 You do not need this project for apps that read their config again on their
 own, or for apps where a restart is cheap.

@@ -241,6 +241,67 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(readyCondition("aged-reload").Reason).To(Equal(reasonOutdated))
 	})
 
+	It("reports Pods that carry the settings of an earlier policy with the same name", func() {
+		create(newDeployment("reborn"))
+		create(newPolicy("reborn-reload", "reborn"))
+		create(newPod("reborn"))
+		first := getPolicy("reborn-reload")
+
+		// The policy is deleted and made again with another signal. The new
+		// one starts at generation 1 again, the generation the Pod was
+		// made under. Only the UID is new.
+		Expect(k8sClient.Delete(ctx, first)).To(Succeed())
+		Expect(policyExists("reborn-reload")).To(BeFalse())
+		again := newPolicy("reborn-reload", "reborn")
+		again.Spec.Reload.Signal = sigUSR1
+		create(again)
+		second := getPolicy("reborn-reload")
+		Expect(second.Generation).To(Equal(first.Generation))
+		Expect(second.UID).NotTo(Equal(first.UID))
+
+		_, err := runReconcile("reborn-reload")
+		Expect(err).NotTo(HaveOccurred())
+
+		status := getPolicy("reborn-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(1))
+		Expect(status.InjectedPods).To(BeZero())
+		Expect(readyCondition("reborn-reload").Reason).To(Equal(reasonOutdated))
+
+		By("a new Pod gets the settings of the new policy and is counted")
+		create(newPod("reborn"))
+		_, err = runReconcile("reborn-reload")
+		Expect(err).NotTo(HaveOccurred())
+		status = getPolicy("reborn-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(2))
+		Expect(status.InjectedPods).To(BeEquivalentTo(1))
+	})
+
+	It("still counts a Pod that version 0.2.0 marked, by the generation alone", func() {
+		create(newDeployment("legacy"))
+		create(newPolicy("legacy-reload", "legacy"))
+		// A Pod that went through the webhook of version 0.2.0. Its mark has
+		// no UID. The webhook leaves a Pod alone that already has a mark.
+		pod := newPod("legacy")
+		pod.Annotations[InjectedAnnotation] = "legacy-reload@1"
+		create(pod)
+
+		_, err := runReconcile("legacy-reload")
+		Expect(err).NotTo(HaveOccurred())
+		status := getPolicy("legacy-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(1))
+		Expect(status.InjectedPods).To(BeEquivalentTo(1))
+		Expect(readyCondition("legacy-reload").Reason).To(Equal(reasonInjected))
+
+		By("a change of the policy still shows it as outdated")
+		pol := getPolicy("legacy-reload")
+		pol.Spec.Reload.Signal = sigUSR1
+		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
+		_, err = runReconcile("legacy-reload")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getPolicy("legacy-reload").Status.InjectedPods).To(BeZero())
+		Expect(readyCondition("legacy-reload").Reason).To(Equal(reasonOutdated))
+	})
+
 	It("counts only Pods of its own Deployment that ask for the settings and are not on their way out", func() {
 		create(newDeployment("picky"))
 		create(newPolicy("picky-reload", "picky"))

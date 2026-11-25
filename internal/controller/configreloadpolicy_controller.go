@@ -169,7 +169,7 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 type counts struct {
 	pods     int32 // Pods of the Deployment that ask for the settings
 	current  int32 // of those, the ones that carry the settings of the policy as it is now
-	outdated int32 // of those, the ones that carry the settings of an earlier version of the policy
+	outdated int32 // of those, the ones that carry the settings of an earlier version of the policy, or of an earlier policy with the same name
 }
 
 // countPods looks at the Pods of the Deployment. Only their metadata is
@@ -201,9 +201,14 @@ func (r *ConfigReloadPolicyReconciler) countPods(
 			continue
 		}
 		n.pods++
-		switch generation, injected := injectedGeneration(pod.Annotations, policy.Name); {
+		// The settings on a Pod are the ones of the policy as it is now when
+		// the mark has the same generation and the same UID. A policy that
+		// is deleted and made again starts at generation 1 again, so the
+		// generation alone does not tell the two apart. A mark from version
+		// 0.2.0 has no UID. For it only the generation can be compared.
+		switch uid, generation, injected := injectedMark(pod.Annotations, policy.Name); {
 		case !injected:
-		case generation == policy.Generation:
+		case generation == policy.Generation && (uid == "" || uid == string(policy.UID)):
 			n.current++
 		default:
 			n.outdated++

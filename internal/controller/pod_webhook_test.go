@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -157,6 +158,14 @@ func mountConfigMap(pod *corev1.Pod, configMap, dir string) *corev1.Pod {
 	app := &pod.Spec.Containers[1]
 	app.VolumeMounts = append(app.VolumeMounts, corev1.VolumeMount{Name: "config", MountPath: dir})
 	return pod
+}
+
+// wantMark is the mark a new Pod must carry for the policy as it is now:
+// its name, its generation and its UID.
+func wantMark(policy string) string {
+	GinkgoHelper()
+	p := getPolicy(policy)
+	return fmt.Sprintf("%s@%d@%s", p.Name, p.Generation, p.UID)
 }
 
 // stored reads the Pod back from the API server.
@@ -312,7 +321,7 @@ var _ = Describe("Pod webhook", func() {
 		for _, m := range helper.VolumeMounts {
 			Expect(m.Name).NotTo(Equal(volumes[0].Name), "the other container is left alone")
 		}
-		Expect(got.Annotations).To(HaveKeyWithValue(InjectedAnnotation, "early-reload@1"))
+		Expect(got.Annotations).To(HaveKeyWithValue(InjectedAnnotation, wantMark("early-reload")))
 	})
 
 	It("carries the reload settings of the policy", func() {
@@ -358,7 +367,7 @@ var _ = Describe("Pod webhook", func() {
 		Expect(addedVolumes(got)).To(HaveLen(2))
 		Expect(got.Spec.Containers[0].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: helperMountPath}))
 		Expect(got.Spec.Containers[1].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: mountPath}))
-		Expect(got.Annotations).To(HaveKeyWithValue(InjectedAnnotation, "pair-app@1,pair-helper@1"))
+		Expect(got.Annotations).To(HaveKeyWithValue(InjectedAnnotation, wantMark("pair-app")+","+wantMark("pair-helper")))
 	})
 
 	DescribeTable("rejects a Pod that cannot get its settings, and says why",

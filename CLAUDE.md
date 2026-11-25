@@ -46,7 +46,7 @@ reload는 부가 기능이다. 온전하게 동작해야 하지만, 이 기능 �
 - **웹훅은 정책만 읽는다.** Deployment 이름은 Pod 자신에게서 알아낸다(소유자 ReplicaSet 이름에서 `pod-template-hash`를 뗀다).
 - **전부 아니면 전무다.** 정책 하나라도 적용할 수 없으면 아무것도 넣지 않는다. 문제의 종류: 정책 없음, container 없음, `CONFIG_RELOAD_` env를 사용자가 이미 씀, mount 경로에 다른 것이 있음(같은 ConfigMap이면 그대로 쓴다), 한 container를 두 정책이 가리킴, Deployment의 Pod가 아님, 정책을 읽지 못함.
 - **`failurePolicy`가 문제를 어떻게 다룰지 정한다.** `Fail`(기본)이면 Pod를 거부하고 이유를 메시지에 적는다. `Ignore`면 사용자가 쓴 그대로 통과시킨다. 차트 값 `webhook.failurePolicy` 하나가 웹훅 등록(API server가 웹훅에 닿지 못했을 때)과 manager 인자 `--webhook-failure-policy`(웹훅이 문제를 발견했을 때) 양쪽에 들어간다. 둘이 어긋나면 안 된다.
-- **주입한 Pod에는 표시를 남긴다.** 애노테이션 `reload.nagisatosanae.github.io/injected`에 `정책이름@세대`를 적는다. controller가 이것으로 센다. 이 표시가 이미 있는 Pod는 다시 주입하지 않는다.
+- **주입한 Pod에는 표시를 남긴다.** 애노테이션 `reload.nagisatosanae.github.io/injected`에 `정책이름@세대@UID`를 적는다. controller가 이것으로 센다. UID는 지웠다가 같은 이름으로 다시 만든 정책을 구별한다. 0.2.0이 남긴 `정책이름@세대`도 읽고, 그때는 세대만 비교한다. 이 표시가 이미 있는 Pod는 다시 주입하지 않는다.
 - **Deployment는 apply할 때 검사한다.** `DeploymentChecker`는 Pod 템플릿으로 Pod를 만들어 `PodInjector.injectFor`를 돌려 보고 결과를 버린다. Pod 웹훅과 같은 코드이므로 두 판단이 어긋나지 않는다. `Fail`이면 거부하고 `Ignore`면 경고를 낸다. 삭제 중인 Deployment는 항상 통과시킨다.
 - **웹훅의 이름들이 두 곳에 있다**: 애노테이션, 경로 두 개(`/mutate--v1-pod`, `/validate-apps-v1-deployment`), 필터 식이 `internal/controller/`의 Go 파일과 `charts/config-reload-operator/templates/webhook.yaml`에 따로 적혀 있다. 하나를 바꾸면 다른 쪽도 같이 바꾼다. `TestChartMatchesTheWebhook`이 어긋남을 잡는다.
 - **웹훅은 인증서가 있을 때만 켜진다.** manager는 `--webhook-cert-path`가 있을 때만 웹훅을 등록한다. 인증서는 Helm이 만든다. cert-manager는 쓰지 않는다.
@@ -54,7 +54,7 @@ reload는 부가 기능이다. 온전하게 동작해야 하지만, 이 기능 �
 **controller**
 
 - **controller는 정책의 status만 쓴다.** Deployment와 Pod는 읽기만 하고, 권한도 읽기뿐이다. 반복 reconcile이 무언가를 쓰면 버그다.
-- **status는 Pod를 세어 적는다.** `status.pods`는 그 Deployment의 Pod 중 애노테이션이 있는 것, `status.injectedPods`는 그중 정책의 현재 세대 표시를 가진 것이다. Ready의 reason은 `Injected`, `Accepted`, `NotInjected`, `Outdated`, `WorkloadNotFound`, `ContainerNotFound`, `NotOptedIn`이다.
+- **status는 Pod를 세어 적는다.** `status.pods`는 그 Deployment의 Pod 중 애노테이션이 있는 것, `status.injectedPods`는 그중 정책의 현재 세대와 UID 표시를 가진 것이다. Ready의 reason은 `Injected`, `Accepted`, `NotInjected`, `Outdated`, `WorkloadNotFound`, `ContainerNotFound`, `NotOptedIn`이다.
 - **Pod가 생기거나 없어지면 다시 본다.** Pod는 metadata만 캐시에 둔다. Ready가 아니면 30초, Ready면 5분 뒤에도 다시 본다.
 - **돌고 있는 것은 건드리지 않는다.** 정책을 지워도, 정책을 고쳐도 돌고 있는 Pod는 그대로다. 걷어내기도 다시 띄우기도 하지 않는다. finalizer도 없다. 0.1이 붙인 finalizer `reload.nagisatosanae.github.io/revert`는 떼어 주기만 한다.
 

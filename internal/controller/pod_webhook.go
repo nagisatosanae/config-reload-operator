@@ -44,8 +44,9 @@ const (
 	InjectAnnotation = "reload.nagisatosanae.github.io/inject"
 
 	// InjectedAnnotation is put on a Pod by the webhook. It names the
-	// policies whose settings the Pod carries, each as "name@generation",
-	// with commas in between.
+	// policies whose settings the Pod carries, each as
+	// "name@generation@uid", with commas in between. Version 0.2.0 wrote
+	// "name@generation".
 	InjectedAnnotation = "reload.nagisatosanae.github.io/injected"
 
 	// injectPath is the URL path the webhook is served on.
@@ -184,7 +185,7 @@ func (p *PodInjector) injectFor(ctx context.Context, namespace, deployment strin
 		if err := injectPolicy(out, policy); err != nil {
 			return nil, fmt.Errorf("policy %q cannot be applied: %w", policy.Name, err)
 		}
-		applied = append(applied, policy.Name+"@"+strconv.FormatInt(policy.Generation, 10))
+		applied = append(applied, policy.Name+"@"+strconv.FormatInt(policy.Generation, 10)+"@"+string(policy.UID))
 	}
 	if len(applied) == 0 {
 		return nil, fmt.Errorf("no ConfigReloadPolicy in namespace %q points at Deployment %q", namespace, deployment)
@@ -212,19 +213,24 @@ func deploymentOf(pod metav1.Object) (string, error) {
 	return strings.TrimSuffix(owner.Name, "-"+hash), nil
 }
 
-// injectedGeneration reads the mark the webhook left on a Pod. It returns
-// the generation of the named policy whose settings the Pod carries. The
-// second result is false when the Pod does not carry that policy at all.
-func injectedGeneration(annotations map[string]string, policy string) (int64, bool) {
+// injectedMark reads the mark the webhook left on a Pod. It returns the
+// UID and the generation of the named policy whose settings the Pod
+// carries. The last result is false when the Pod does not carry that
+// policy at all.
+//
+// The UID tells a policy from an earlier one that had the same name. A
+// mark written by version 0.2.0 has no UID, and the UID comes back empty.
+func injectedMark(annotations map[string]string, policy string) (string, int64, bool) {
 	for entry := range strings.SplitSeq(annotations[InjectedAnnotation], ",") {
-		name, generation, found := strings.Cut(entry, "@")
+		name, rest, found := strings.Cut(entry, "@")
 		if !found || name != policy {
 			continue
 		}
+		generation, uid, _ := strings.Cut(rest, "@")
 		n, err := strconv.ParseInt(generation, 10, 64)
-		return n, err == nil
+		return uid, n, err == nil
 	}
-	return 0, false
+	return "", 0, false
 }
 
 // injectPolicy puts the settings of one policy on the Pod.
