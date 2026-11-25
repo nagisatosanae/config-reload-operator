@@ -71,6 +71,9 @@ Every config change after that:
     --> the app reads its config again: same Pod, same process
 ```
 
+Most of the time between a ConfigMap change and the reload is the kubelet.
+It needs up to about a minute to update the files in the Pod.
+
 The webhook and the controller are not on the reload path. Reloads keep
 working while both are down. The watcher never talks to the Kubernetes API,
 so app Pods need no extra permissions.
@@ -370,38 +373,10 @@ start above. An end-to-end test on a kind cluster is the next thing to add.
 
 ## Limits
 
-- The app's image must contain the watcher and a shell. You have to build
-  an image once.
-- Only Deployments, and one ConfigMap directory for each container.
-- The kubelet needs up to about a minute to update the files. This is not
-  for changes that must apply at once.
-- A changed policy reaches a Pod only when the Pod is replaced, because the
-  settings are environment variables. The operator does not replace Pods.
-  Config changes do not need that.
+- Only Deployments are supported.
 - Nothing restarts the watcher. It starts watching again by itself after a
   failure, but when its process is killed, reloads stop until the Pod is
   replaced. `watcher --healthcheck` lets a probe notice.
-- With `failurePolicy: Fail`, no Pod with the annotation can start while no
-  webhook Pod is up. The chart runs two of them.
 
 You do not need this project for apps that read their config again on their
 own, or for apps where a restart is cheap.
-
-## Not done yet
-
-- **Metrics and Kubernetes Events** for reloads and failed checks.
-- **More kinds of workloads and config**: StatefulSet, DaemonSet, Secrets,
-  reload by HTTP call.
-
-## Repository layout
-
-| Path | What is there |
-|---|---|
-| `api/v1alpha1/` | The `ConfigReloadPolicy` type. |
-| `internal/controller/` | The controller, the webhook and their tests. |
-| `cmd/manager/` | The binary of the controller and the webhook. |
-| `cmd/watcher/` | The watcher binary, its start script, its tests and its Dockerfile. |
-| `charts/config-reload-operator/` | The Helm chart. |
-| `demo/nginx/` | The demo image and its manifests. |
-| `config/` | Generated CRD and RBAC, and the sample policy. |
-| `docs/` | More documentation. |
