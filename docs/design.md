@@ -15,8 +15,9 @@ these reasons.
   process it can see. A sidecar sees the app only with
   `shareProcessNamespace: true` on the Pod. Then every container in the Pod
   sees the processes of all the others, can read their files through
-  `/proc/<pid>/root`, and can signal them. Many clusters forbid this by
-  policy.
+  `/proc/<pid>/root`, and can signal them. The Pod Security Standards of
+  Kubernetes do not forbid this, but some organizations do with rules of
+  their own.
 - **It has to guess.** A sidecar must find the app by its process name, and
   it must run as the same user or hold a capability to signal it. Inside
   the app's container the watcher simply signals its parent.

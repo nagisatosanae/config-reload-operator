@@ -82,15 +82,15 @@ type ReloadSpec struct {
 // ConfigReloadPolicySpec defines the desired state of ConfigReloadPolicy.
 type ConfigReloadPolicySpec struct {
 	// workloadRef is the workload to reload. It cannot be changed after the
-	// policy is created, because the watcher settings would stay on the old
-	// workload. To point at another workload, delete the policy and create a
-	// new one.
+	// policy is created. To point at another workload, delete the policy and
+	// create a new one. Pods of the old workload keep their settings until
+	// they are replaced.
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="workloadRef cannot be changed. Delete the policy and create a new one."
 	// +required
 	WorkloadRef WorkloadRef `json:"workloadRef"`
 
 	// containerName is the container that runs the watcher and the app. It
-	// cannot be changed after the policy is created, for the same reason.
+	// cannot be changed after the policy is created either.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="containerName cannot be changed. Delete the policy and create a new one."
@@ -120,9 +120,10 @@ type ConfigReloadPolicySpec struct {
 // ConfigReloadPolicyStatus defines the observed state of ConfigReloadPolicy.
 type ConfigReloadPolicyStatus struct {
 	// conditions holds the state of the policy. The controller sets one
-	// condition, "Ready". It is True when the watcher settings are on the
-	// Deployment. When it is False, the reason and the message say what is
-	// wrong.
+	// condition, "Ready". It is True when every Pod of the workload that asks
+	// for the settings carries them as the policy is now, and also when
+	// there are no Pods yet. When it is False, the reason and the message
+	// say what is wrong.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

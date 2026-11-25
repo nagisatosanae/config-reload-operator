@@ -88,7 +88,9 @@ working while both are down. The watcher never talks to the Kubernetes API,
 so app Pods need no extra permissions.
 
 The webhook is only needed when a Pod is created. A Pod that runs is never
-changed, also not when its policy is deleted. Why it is built this way is in
+changed, also not when its policy is deleted. But while the policy is gone,
+a Deployment that still has the annotation cannot start new Pods. With
+`Ignore` they start without the settings. Why it is built this way is in
 [docs/design.md](docs/design.md).
 
 ## What is better now
@@ -101,7 +103,7 @@ changed, also not when its policy is deleted. Why it is built this way is in
 | Can run a check command first, such as `nginx -t`. | A broken config is not loaded. The app keeps running with the old one. |
 | The app is PID 1 and the watcher runs next to it. | Stop signals reach the app directly, and the container exits with the app's exit code. A watcher that fails cannot stop the app. |
 | Settings come from a policy, not from the image. | One image works for any path and any signal. |
-| The policy has a status. | A Deployment, a container or an annotation that is missing shows up as `Ready=False` with a reason, and you see how many Pods carry the settings. |
+| The policy has a status. | A Deployment, a container or an annotation that is missing shows up as `Ready=False` with a reason, and you see how many Pods carry the settings. The status does not look inside a Pod: a watcher that stopped or a check that failed is only in the Pod's log. |
 | Only new Pods get the settings. | Your Deployment is never changed and a Pod that runs is never touched, so there are no surprise rollouts. |
 | Deleting a policy changes nothing that runs. | Pods keep their settings until they are replaced. |
 
@@ -111,8 +113,8 @@ Pod UID and the restart count did not change.
 
 ## Quick start
 
-You need a Kubernetes cluster (kind, minikube or Docker Desktop), `kubectl`
-and Helm 3 or newer.
+You need a Kubernetes cluster of version 1.30 or newer (kind, minikube or
+Docker Desktop), `kubectl` and Helm 3 or newer.
 
 ![Demo: NGINX goes from v1 to v2 in the same Pod](docs/demo.gif)
 
@@ -276,8 +278,9 @@ docker inspect --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' nginx
 ```
 
 The script needs a shell in the image. Without a policy it only starts the
-app, so the image is safe to use anywhere. More about the images is in
-[docs/images.md](docs/images.md).
+app, so the image is safe to use anywhere. A `command:` on the container in
+your Deployment replaces the entrypoint, and then no watcher starts. More
+about this and the images is in [docs/images.md](docs/images.md).
 
 **2. Write a policy** in the same namespace as the Deployment.
 

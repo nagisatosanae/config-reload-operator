@@ -77,7 +77,7 @@ spec:
               containerName:
                 description: |-
                   containerName is the container that runs the watcher and the app. It
-                  cannot be changed after the policy is created, for the same reason.
+                  cannot be changed after the policy is created either.
                 maxLength: 63
                 minLength: 1
                 type: string
@@ -138,9 +138,9 @@ spec:
               workloadRef:
                 description: |-
                   workloadRef is the workload to reload. It cannot be changed after the
-                  policy is created, because the watcher settings would stay on the old
-                  workload. To point at another workload, delete the policy and create a
-                  new one.
+                  policy is created. To point at another workload, delete the policy and
+                  create a new one. Pods of the old workload keep their settings until
+                  they are replaced.
                 properties:
                   kind:
                     default: Deployment
@@ -175,9 +175,10 @@ spec:
               conditions:
                 description: |-
                   conditions holds the state of the policy. The controller sets one
-                  condition, "Ready". It is True when the watcher settings are on the
-                  Deployment. When it is False, the reason and the message say what is
-                  wrong.
+                  condition, "Ready". It is True when every Pod of the workload that asks
+                  for the settings carries them as the policy is now, and also when
+                  there are no Pods yet. When it is False, the reason and the message
+                  say what is wrong.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
