@@ -23,18 +23,26 @@ keep data in memory or start slowly.
 
 The other way is to keep the Pod and send the signal yourself. I did this
 once for Fluentd running as a sidecar: a small program watched the config
-files and sent the signal. It worked, but it had weak points.
+files and sent the signal. As I remember it, the start script was two
+lines:
 
-| Weak point | What went wrong |
+```sh
+watcher &
+exec fluentd -c /fluentd/etc/fluent.conf
+```
+
+It worked, but it left room to improve.
+
+| Room to improve | What it meant |
 |---|---|
-| A shell script started the app and the reloader as two processes. | When the reloader died, nobody noticed. The container looked healthy and reloads just stopped. Stop signals and exit codes did not always reach the right process. |
+| Nothing looked after the watcher. | A watcher that died would go unnoticed. The container would look healthy and reloads would just stop. |
 | Every file event caused a reload. | One ConfigMap update makes several file events, so one change could reload the app more than once. Saving the same content again also caused a reload. |
 | There was no check before the reload. | A broken config went to the app as it was. |
 | The path and the signal were fixed in the image. | Every app needed its own build. |
 | Nothing reported a wrong setup. | It failed without a message. |
 
-This project is that idea made general, with these weak points fixed or
-made smaller. What is left is under [Limits](#limits).
+This project is that idea made general, with these points fixed or made
+smaller. What is left is under [Limits](#limits).
 
 ## How it works
 
