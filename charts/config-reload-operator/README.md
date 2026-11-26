@@ -99,22 +99,25 @@ upgrade:
 kubectl apply -f charts/config-reload-operator/crds/
 ```
 
-Coming from version 0.1: a policy now needs `spec.mountPath`, and the
-annotation goes on the Pod template. Images must be built again with the
-start script, see `docs/images.md` in the repository. Policies made by 0.1
-carry a finalizer. The controller of this version takes it off, but only
-after you have added `spec.mountPath` to the policy. Until then the policy
-cannot be deleted. The `WATCH_*` env that 0.1 put on your Deployments stays
-there. Nothing reads it any more, so take it off yourself.
+Coming from version 0.1: write your policies again in the form of this
+version, with `spec.containers`, and put the annotation on the Pod
+template. Images must be built again with the start script, see
+`docs/images.md` in the repository. Policies made by 0.1 carry a finalizer.
+The controller of this version takes it off. The `WATCH_*` env that 0.1 put
+on your Deployments stays there. Nothing reads it any more, so take it off
+yourself.
 
 Coming from version 0.2.0 or 0.2.1: write your policies again. A policy
 now lists its containers under `spec.containers`, and a Deployment has one
-policy. Apply the CRD, upgrade, and then apply each policy in the new form
-under the name it has. If a Deployment had one policy for each container,
-put the containers into one of them and delete the others. Until a policy
-is written again it reports `ContainerNotFound`, and a new Pod of its
-Deployment is rejected, or starts without the settings with `Ignore`. Pods
-that run keep their settings. They count as `Outdated` until they are
+policy. Save your policies first, with
+`kubectl get configreloadpolicies -A -o yaml`. Once the new CRD is applied,
+the fields that moved are no longer shown. Then apply the CRD, upgrade, and
+apply each policy in the new form under the name it has. If a Deployment
+had one policy for each container, put the containers into one of them and
+delete the others. From the moment the CRD is applied until the chart is
+upgraded and the policy is written again, the policy reports
+`ContainerNotFound`, and a new Pod of its Deployment is rejected, or starts
+without the settings with `Ignore`. Pods that run keep their settings. They count as `Outdated` until they are
 replaced, because the webhook now writes a hash of what the policy says
 about each container on the Pod, and the controller compares it. From now
 on a Pod counts as `Outdated` when it carries settings that differ from

@@ -103,6 +103,24 @@ func TestSettingsHash(t *testing.T) {
 		t.Fatalf("settingsHash = %q, want %q", got, want)
 	}
 
+	// The same for an entry as the API server gives it back: with the
+	// defaults filled in, and with a check command. It is the entry of the
+	// sample policy, and the value is the one its Pods carry.
+	three := int32(3)
+	full := &reloadv1alpha1.ContainerSettings{
+		Name:         appContainer,
+		ConfigMapRef: reloadv1alpha1.ConfigMapRef{Name: "nginx-config"},
+		MountPath:    mountPath,
+		Reload: reloadv1alpha1.ReloadSpec{
+			Signal:          "SIGHUP",
+			DebounceSeconds: &three,
+			ValidateCommand: strings.Fields("nginx -t"),
+		},
+	}
+	if got, want := settingsHash(full), "8476bb7d6b"; got != want {
+		t.Fatalf("settingsHash of an entry with reload settings = %q, want %q", got, want)
+	}
+
 	debounce := int32(9)
 	changes := map[string]func(*reloadv1alpha1.ContainerSettings){
 		"the container":     func(c *reloadv1alpha1.ContainerSettings) { c.Name = helperContainer },
