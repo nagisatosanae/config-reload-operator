@@ -321,7 +321,7 @@ working.
 | `Injected` | True | Every Pod carries the settings. |
 | `Accepted` | True | There are no Pods yet. New ones get the settings. |
 | `NotInjected` | False | A Pod runs without the settings. |
-| `Outdated` | False | A Pod carries the settings from before the policy was changed. |
+| `Outdated` | False | A Pod carries the settings from before the policy was changed. Changed means edited, or deleted and made again. A policy that is made again is a new object, also when its text is the same. |
 | `WorkloadNotFound` | False | There is no Deployment with that name. |
 | `ContainerNotFound` | False | The Deployment has no container with that name. |
 | `NotOptedIn` | False | The Pod template of the Deployment does not have the annotation. |

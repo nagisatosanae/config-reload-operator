@@ -107,7 +107,10 @@ there. Nothing reads it any more, so take it off yourself.
 Coming from version 0.2.0: nothing has to be done. Version 0.2.0 counted a
 Pod as `Injected` when its policy was deleted and made again under the same
 name, although the Pod still carried the old settings. Now the webhook also
-writes the UID of the policy on the Pod, and the controller compares it. A
+writes the UID of the policy on the Pod, and the controller compares it. So
+a policy that is deleted and made again is a new policy for the status:
+Pods from before it count as `Outdated` until they are replaced, also when
+the text of the policy is the same. A
 Pod that 0.2.0 made does not have the UID. For such a Pod the status can
 still be wrong in that case, until the Pod is replaced. While the upgrade
 runs, a policy can show `NotInjected` for a moment, because the controller
