@@ -127,10 +127,18 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	template := &dep.Spec.Template
 
-	// 4. The container must be in the Pod template.
-	if containerIndex(&template.Spec, policy.Spec.ContainerName) < 0 {
-		msg := fmt.Sprintf("Deployment %q has no container named %q", dep.Name, policy.Spec.ContainerName)
+	// 4. Every container the policy names must be in the Pod template. A
+	// policy written for an earlier version has no list of containers.
+	if len(policy.Spec.Containers) == 0 {
+		msg := "the policy names no container. Write it again with spec.containers"
 		return r.report(ctx, &policy, counts{}, metav1.ConditionFalse, reasonContainerNotFound, msg)
+	}
+	for i := range policy.Spec.Containers {
+		name := policy.Spec.Containers[i].Name
+		if containerIndex(&template.Spec, name) < 0 {
+			msg := fmt.Sprintf("Deployment %q has no container named %q", dep.Name, name)
+			return r.report(ctx, &policy, counts{}, metav1.ConditionFalse, reasonContainerNotFound, msg)
+		}
 	}
 
 	// 5. The Pod template must ask for the settings. Without the annotation
@@ -148,8 +156,7 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	switch missing := n.pods - n.current - n.outdated; {
 	case n.pods == 0:
-		msg := fmt.Sprintf("Deployment %q has no Pods now. New Pods get the settings for container %q",
-			dep.Name, policy.Spec.ContainerName)
+		msg := fmt.Sprintf("Deployment %q has no Pods now. New Pods get the settings", dep.Name)
 		return r.report(ctx, &policy, n, metav1.ConditionTrue, reasonAccepted, msg)
 	case missing > 0:
 		msg := fmt.Sprintf("%d of %d Pods of Deployment %q run without the settings. %s%s",
@@ -169,7 +176,7 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 type counts struct {
 	pods     int32 // Pods of the Deployment that ask for the settings
 	current  int32 // of those, the ones that carry the settings of the policy as it is now
-	outdated int32 // of those, the ones that carry the settings of an earlier version of the policy, or of an earlier policy with the same name
+	outdated int32 // of those, the ones that carry other settings than the policy gives now
 }
 
 // countPods looks at the Pods of the Deployment. Only their metadata is
@@ -189,6 +196,11 @@ func (r *ConfigReloadPolicyReconciler) countPods(
 		return counts{}, err
 	}
 
+	// The mark of a Pod that carries the settings of the policy as it is
+	// now. Any other mark means other settings: the policy was changed
+	// after the Pod was made, or an earlier version marked the Pod.
+	want := markFor(policy)
+
 	var n counts
 	for i := range pods.Items {
 		pod := &pods.Items[i]
@@ -201,14 +213,9 @@ func (r *ConfigReloadPolicyReconciler) countPods(
 			continue
 		}
 		n.pods++
-		// The settings on a Pod are the ones of the policy as it is now when
-		// the mark has the same generation and the same UID. A policy that
-		// is deleted and made again starts at generation 1 again, so the
-		// generation alone does not tell the two apart. A mark from version
-		// 0.2.0 has no UID. For it only the generation can be compared.
-		switch uid, generation, injected := injectedMark(pod.Annotations, policy.Name); {
-		case !injected:
-		case generation == policy.Generation && (uid == "" || uid == string(policy.UID)):
+		switch pod.Annotations[InjectedAnnotation] {
+		case "":
+		case want:
 			n.current++
 		default:
 			n.outdated++

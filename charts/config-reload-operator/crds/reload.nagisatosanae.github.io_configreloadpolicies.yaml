@@ -61,86 +61,103 @@ spec:
           spec:
             description: spec defines the desired state of ConfigReloadPolicy
             properties:
-              configMapRef:
-                description: configMapRef is the ConfigMap mounted into that container.
-                properties:
-                  name:
-                    description: |-
-                      name is the name of the ConfigMap. It must be in the same namespace as
-                      the policy.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                required:
-                - name
-                type: object
-              containerName:
+              containers:
                 description: |-
-                  containerName is the container that runs the watcher and the app. It
-                  cannot be changed after the policy is created either.
-                maxLength: 63
-                minLength: 1
-                type: string
-                x-kubernetes-validations:
-                - message: containerName cannot be changed. Delete the policy and
-                    create a new one.
-                  rule: self == oldSelf
-              mountPath:
-                description: |-
-                  mountPath is the directory in that container where the ConfigMap is
-                  mounted. The watcher watches this directory. It must be an absolute
-                  path with no slash at the end, like /etc/nginx/conf.d.
-                maxLength: 4096
-                minLength: 2
-                type: string
-                x-kubernetes-validations:
-                - message: mountPath must be an absolute path with no slash at the
-                    end, like /etc/nginx/conf.d
-                  rule: self.startsWith('/') && !self.endsWith('/')
-              reload:
-                default: {}
-                description: |-
-                  reload says how to reload the app. If you leave it out, the app gets
-                  SIGHUP three seconds after the last change.
-                properties:
-                  debounceSeconds:
-                    default: 3
-                    description: |-
-                      debounceSeconds is how long to wait after the last change before
-                      reloading. It is a quiet period, not a polling interval.
-                    format: int32
-                    maximum: 3600
-                    minimum: 0
-                    type: integer
-                  signal:
-                    default: SIGHUP
-                    description: signal is the signal sent to the app when the config
-                      changes.
-                    enum:
-                    - SIGHUP
-                    - SIGUSR1
-                    - SIGUSR2
-                    type: string
-                  validateCommand:
-                    description: |-
-                      validateCommand is a command that checks the new config before the
-                      signal is sent, for example ["nginx", "-t"]. It runs inside the
-                      container, without a shell. If it exits with a non-zero code, the
-                      signal is not sent and the app keeps its current config. Leave it out
-                      to skip the check.
-                    items:
+                  containers lists the containers of the workload that get the watcher
+                  settings, one entry for each container.
+                items:
+                  description: |-
+                    ContainerSettings says what one container of the workload gets: which
+                    ConfigMap, where it is mounted, and how the app is told to reload.
+                  properties:
+                    configMapRef:
+                      description: configMapRef is the ConfigMap mounted into that
+                        container.
+                      properties:
+                        name:
+                          description: |-
+                            name is the name of the ConfigMap. It must be in the same namespace as
+                            the policy.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    mountPath:
+                      description: |-
+                        mountPath is the directory in that container where the ConfigMap is
+                        mounted. The watcher watches this directory. It must be an absolute
+                        path with no slash at the end, like /etc/nginx/conf.d.
+                      maxLength: 4096
+                      minLength: 2
+                      type: string
+                      x-kubernetes-validations:
+                      - message: mountPath must be an absolute path with no slash
+                          at the end, like /etc/nginx/conf.d
+                        rule: self.startsWith('/') && !self.endsWith('/')
+                    name:
+                      description: |-
+                        name is the container that runs the watcher and the app. A container
+                        can be named only once in a policy.
+                      maxLength: 63
                       minLength: 1
                       type: string
-                    maxItems: 32
-                    type: array
-                    x-kubernetes-list-type: atomic
-                type: object
+                    reload:
+                      default: {}
+                      description: |-
+                        reload says how to reload the app. If you leave it out, the app gets
+                        SIGHUP three seconds after the last change.
+                      properties:
+                        debounceSeconds:
+                          default: 3
+                          description: |-
+                            debounceSeconds is how long to wait after the last change before
+                            reloading. It is a quiet period, not a polling interval.
+                          format: int32
+                          maximum: 3600
+                          minimum: 0
+                          type: integer
+                        signal:
+                          default: SIGHUP
+                          description: signal is the signal sent to the app when the
+                            config changes.
+                          enum:
+                          - SIGHUP
+                          - SIGUSR1
+                          - SIGUSR2
+                          type: string
+                        validateCommand:
+                          description: |-
+                            validateCommand is a command that checks the new config before the
+                            signal is sent, for example ["nginx", "-t"]. It runs inside the
+                            container, without a shell. If it exits with a non-zero code, the
+                            signal is not sent and the app keeps its current config. Leave it out
+                            to skip the check.
+                          items:
+                            minLength: 1
+                            type: string
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      type: object
+                  required:
+                  - configMapRef
+                  - mountPath
+                  - name
+                  type: object
+                maxItems: 16
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               workloadRef:
                 description: |-
-                  workloadRef is the workload to reload. It cannot be changed after the
-                  policy is created. To point at another workload, delete the policy and
-                  create a new one. Pods of the old workload keep their settings until
-                  they are replaced.
+                  workloadRef is the workload to reload. A workload can have only one
+                  policy. It cannot be changed after the policy is created. To point at
+                  another workload, delete the policy and create a new one. Pods of the
+                  old workload keep their settings until they are replaced.
                 properties:
                   kind:
                     default: Deployment
@@ -164,9 +181,7 @@ spec:
                     a new one.
                   rule: self == oldSelf
             required:
-            - configMapRef
-            - containerName
-            - mountPath
+            - containers
             - workloadRef
             type: object
           status:

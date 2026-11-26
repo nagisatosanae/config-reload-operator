@@ -60,7 +60,7 @@ func checkerWebhookConfig() *admissionv1.ValidatingWebhookConfiguration {
 			FailurePolicy:           &fail,
 			ClientConfig: admissionv1.WebhookClientConfig{
 				// envtest turns this into the address of the test server.
-				Service: &admissionv1.ServiceReference{Name: "webhook", Namespace: testNamespace, Path: &path},
+				Service: &admissionv1.ServiceReference{Name: webhookService, Namespace: testNamespace, Path: &path},
 			},
 			Rules: []admissionv1.RuleWithOperations{{
 				Operations: []admissionv1.OperationType{admissionv1.Create, admissionv1.Update},
@@ -200,7 +200,7 @@ var _ = Describe("Deployment check", func() {
 		pol := newPolicy("ending-reload", "ending")
 		create(pol)
 		dep := newDeployment("ending")
-		dep.Finalizers = []string{"example.com/hold"}
+		dep.Finalizers = []string{holdFinalizer}
 		create(dep)
 		Expect(k8sClient.Delete(ctx, pol)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, dep)).To(Succeed())

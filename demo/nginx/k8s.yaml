@@ -44,7 +44,7 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: ghcr.io/nagisatosanae/config-reload-operator/demo-nginx:0.2.1
+          image: ghcr.io/nagisatosanae/config-reload-operator/demo-nginx:0.4.0
           ports:
             - containerPort: 80
 ---

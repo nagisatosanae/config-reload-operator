@@ -61,9 +61,12 @@ Helm chart that holds both, make the policy a `pre-install,pre-upgrade`
 hook. Helm creates a custom resource after the Deployments, and the
 Deployment would be rejected.
 
-With `Fail`, no Pod with the annotation can be created while no webhook Pod
-is up. That is why there are two, with a PodDisruptionBudget that keeps one
-of them. Pods that already run are not affected.
+A new policy is checked too. A Deployment can have only one policy, so a
+second policy for the same Deployment is rejected.
+
+With `Fail`, no Pod with the annotation and no policy can be created while
+no webhook Pod is up. That is why there are two, with a PodDisruptionBudget
+that keeps one of them. Pods that already run are not affected.
 
 The API server talks to a webhook over TLS. The chart makes the certificate
 itself when it is installed, so cert-manager is not needed. An upgrade keeps
@@ -104,18 +107,19 @@ after you have added `spec.mountPath` to the policy. Until then the policy
 cannot be deleted. The `WATCH_*` env that 0.1 put on your Deployments stays
 there. Nothing reads it any more, so take it off yourself.
 
-Coming from version 0.2.0: nothing has to be done. Version 0.2.0 counted a
-Pod as `Injected` when its policy was deleted and made again under the same
-name, although the Pod still carried the old settings. Now the webhook also
-writes the UID of the policy on the Pod, and the controller compares it. So
-a policy that is deleted and made again is a new policy for the status:
-Pods from before it count as `Outdated` until they are replaced, also when
-the text of the policy is the same. A
-Pod that 0.2.0 made does not have the UID. For such a Pod the status can
-still be wrong in that case, until the Pod is replaced. While the upgrade
-runs, a policy can show `NotInjected` for a moment, because the controller
-of 0.2.0 cannot read what the new webhook writes. It is right again once
-the new controller is up.
+Coming from version 0.2.0 or 0.2.1: write your policies again. A policy
+now lists its containers under `spec.containers`, and a Deployment has one
+policy. Apply the CRD, upgrade, and then apply each policy in the new form
+under the name it has. If a Deployment had one policy for each container,
+put the containers into one of them and delete the others. Until a policy
+is written again it reports `ContainerNotFound`, and a new Pod of its
+Deployment is rejected, or starts without the settings with `Ignore`. Pods
+that run keep their settings. They count as `Outdated` until they are
+replaced, because the webhook now writes a hash of what the policy says
+about each container on the Pod, and the controller compares it. From now
+on a Pod counts as `Outdated` when it carries settings that differ from
+the policy as it is now. A policy that is deleted and made again with the
+same content finds its Pods `Injected`.
 
 ## Uninstall
 

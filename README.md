@@ -264,7 +264,7 @@ command your image ran before.
 
 ```dockerfile
 FROM nginx:stable-alpine
-COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.2.1 \
+COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.4.0 \
      /watcher /watcher-entrypoint.sh /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/watcher-entrypoint.sh"]
 CMD ["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
@@ -282,7 +282,8 @@ app, so the image is safe to use anywhere. A `command:` on the container in
 your Deployment replaces the entrypoint, and then no watcher starts. More
 about this and the images is in [docs/images.md](docs/images.md).
 
-**2. Write a policy** in the same namespace as the Deployment.
+**2. Write a policy** in the same namespace as the Deployment. A Deployment
+has one policy. The policy lists the containers that get the settings.
 
 ```yaml
 apiVersion: reload.nagisatosanae.github.io/v1alpha1
@@ -293,25 +294,27 @@ metadata:
 spec:
   workloadRef:
     name: nginx-demo
-  containerName: nginx
-  configMapRef:
-    name: nginx-config
-  mountPath: /etc/nginx/conf.d
-  reload:
-    signal: SIGHUP
-    debounceSeconds: 3
-    validateCommand: ["nginx", "-t"]
+  containers:
+    - name: nginx
+      configMapRef:
+        name: nginx-config
+      mountPath: /etc/nginx/conf.d
+      reload:
+        signal: SIGHUP
+        debounceSeconds: 3
+        validateCommand: ["nginx", "-t"]
 ```
 
 | Field | Default | Meaning |
 |---|---|---|
-| `spec.workloadRef.name` | required | The Deployment to reload. It cannot be changed later. |
-| `spec.containerName` | required | The container that runs the watcher and the app. It cannot be changed later. |
-| `spec.configMapRef.name` | required | The ConfigMap with the config files. The webhook mounts it in that container. |
-| `spec.mountPath` | required | The directory where the ConfigMap is mounted. The watcher watches it. An absolute path with no slash at the end. |
-| `spec.reload.signal` | `SIGHUP` | `SIGHUP`, `SIGUSR1` or `SIGUSR2`. |
-| `spec.reload.debounceSeconds` | `3` | How long the files must stay quiet before the reload. 0 to 3600. |
-| `spec.reload.validateCommand` | none | A command that checks the new config. It runs in the container, without a shell, for at most 10 seconds. If it fails, no signal is sent. |
+| `spec.workloadRef.name` | required | The Deployment to reload. It cannot be changed later. A second policy for the same Deployment is rejected. |
+| `spec.containers` | required | One entry for each container that gets the settings. The fields below are in an entry. |
+| `name` | required | The container that runs the watcher and the app. |
+| `configMapRef.name` | required | The ConfigMap with the config files. The webhook mounts it in that container. |
+| `mountPath` | required | The directory where the ConfigMap is mounted. The watcher watches it. An absolute path with no slash at the end. |
+| `reload.signal` | `SIGHUP` | `SIGHUP`, `SIGUSR1` or `SIGUSR2`. |
+| `reload.debounceSeconds` | `3` | How long the files must stay quiet before the reload. 0 to 3600. |
+| `reload.validateCommand` | none | A command that checks the new config. It runs in the container, without a shell, for at most 10 seconds. If it fails, no signal is sent. |
 
 `kubectl get configreloadpolicies` (short name `crp`) shows if a policy is
 working.
@@ -321,7 +324,7 @@ working.
 | `Injected` | True | Every Pod carries the settings. |
 | `Accepted` | True | There are no Pods yet. New ones get the settings. |
 | `NotInjected` | False | A Pod runs without the settings. |
-| `Outdated` | False | A Pod carries the settings from before the policy was changed. Changed means edited, or deleted and made again. A policy that is made again is a new object, also when its text is the same. |
+| `Outdated` | False | A Pod carries settings that differ from the policy as it is now. |
 | `WorkloadNotFound` | False | There is no Deployment with that name. |
 | `ContainerNotFound` | False | The Deployment has no container with that name. |
 | `NotOptedIn` | False | The Pod template of the Deployment does not have the annotation. |
@@ -372,7 +375,7 @@ downloads the two binaries the first time.
 | Part | Tests | What they cover |
 |---|---|---|
 | watcher | 25 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, the start script, a watch process that fails without hurting the app. |
-| controller | 65 envtest cases and 6 Go tests | Defaults and bad values at the API server, what the webhook puts on a new Pod, every reason a Pod is rejected and the same Pods under Ignore, the same check when a Deployment is applied, the Pod counts in the status, every not-ready reason, nothing written to a Deployment or to a Pod that runs. |
+| controller | 78 envtest cases and 8 Go tests | Defaults and bad values at the API server, a second policy for a Deployment, what the webhook puts on a new Pod, every reason a Pod is rejected and the same Pods under Ignore, the same check when a Deployment is applied, the Pod counts in the status, every not-ready reason, nothing written to a Deployment or to a Pod that runs. |
 
 GitHub Actions runs the tests and the linter on every push.
 

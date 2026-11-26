@@ -8,9 +8,10 @@ metadata:
 spec:
   workloadRef:
     name: nginx-demo
-  containerName: nginx
-  configMapRef:
-    name: nginx-config
-  mountPath: /etc/nginx/conf.d
-  reload:
-    validateCommand: ["nginx", "-t"]
+  containers:
+    - name: nginx
+      configMapRef:
+        name: nginx-config
+      mountPath: /etc/nginx/conf.d
+      reload:
+        validateCommand: ["nginx", "-t"]

@@ -83,11 +83,11 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
-		// Register the Pod webhook and the Deployment check with the API
-		// server.
+		// Register the Pod webhook, the Deployment check and the check of a
+		// new policy with the API server.
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
 			MutatingWebhooks:   []*admissionv1.MutatingWebhookConfiguration{injectorWebhookConfig()},
-			ValidatingWebhooks: []*admissionv1.ValidatingWebhookConfiguration{checkerWebhookConfig()},
+			ValidatingWebhooks: []*admissionv1.ValidatingWebhookConfiguration{checkerWebhookConfig(), policyCheckWebhookConfig()},
 		},
 	}
 
@@ -115,6 +115,9 @@ var _ = BeforeSuite(func() {
 	testInjector.client = k8sClient
 	server.Register(injectPath, admission.WithDefaulter[*corev1.Pod](scheme.Scheme, testInjector))
 	server.Register(checkPath, admission.WithValidator[*appsv1.Deployment](scheme.Scheme, checkerSwitch{testInjector}))
+	testPolicyCheck.client = k8sClient
+	server.Register(policyCheckPath,
+		admission.WithValidator[*reloadv1alpha1.ConfigReloadPolicy](scheme.Scheme, testPolicyCheck))
 	go func() {
 		defer GinkgoRecover()
 		Expect(server.Start(ctx)).To(Succeed())

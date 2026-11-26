@@ -8,7 +8,7 @@ ConfigMap이 바뀌면 Pod를 교체하지 않고 시그널(기본 `SIGHUP`)로 
 
 - Go 모듈: `github.com/nagisatosanae/config-reload-operator` (Go 1.26, controller-runtime v0.25)
 - API: `reload.nagisatosanae.github.io/v1alpha1`, kind `ConfigReloadPolicy` (short name `crp`)
-- 범위: Deployment, 같은 네임스페이스, container마다 ConfigMap 디렉터리 하나.
+- 범위: Deployment, 같은 네임스페이스, Deployment마다 정책 하나, container마다 ConfigMap 디렉터리 하나.
 
 ## 원칙
 
@@ -22,7 +22,7 @@ reload는 부가 기능이다. 온전하게 동작해야 하지만, 이 기능 �
 |---|---|
 | `cmd/watcher/` | watcher 바이너리와 시작 스크립트 `watcher-entrypoint.sh`. 스크립트가 watcher를 백그라운드로 띄우고 앱으로 바뀐다. watcher는 설정 디렉터리를 감시하고, 내용 해시 비교 → debounce → 검증 명령 → 시그널 순서로 동작한다. Kubernetes API를 호출하지 않는다. |
 | `cmd/manager/` | manager 바이너리의 진입점. 실행 인자로 역할을 고른다. |
-| `internal/controller/` | Pod 웹훅(`pod_webhook.go`), Deployment 검사(`deployment_check.go`), `ConfigReloadPolicy` reconciler와 테스트. |
+| `internal/controller/` | Pod 웹훅(`pod_webhook.go`), Deployment 검사(`deployment_check.go`), 정책 검사(`policy_check.go`), `ConfigReloadPolicy` reconciler와 테스트. |
 | `api/v1alpha1/` | CRD 타입. 기본값과 검증은 kubebuilder 마커로 정의한다. |
 | `charts/config-reload-operator/` | Helm 차트. 공식 설치 경로다. |
 | `config/` | controller-gen이 만든 CRD와 RBAC, 샘플 정책. |
@@ -42,19 +42,22 @@ reload는 부가 기능이다. 온전하게 동작해야 하지만, 이 기능 �
 
 **웹훅**
 
-- **주입은 Pod에 한다.** `PodInjector`는 애노테이션 `reload.nagisatosanae.github.io/inject: "true"`가 있는 Pod가 만들어질 때, 그 Deployment를 가리키는 정책을 읽어 ConfigMap volume, mount, env 네 개를 넣는다. Deployment는 고치지 않는다. 애노테이션은 Deployment의 `metadata`가 아니라 Pod 템플릿에 붙인다.
+- **주입은 Pod에 한다.** `PodInjector`는 애노테이션 `reload.nagisatosanae.github.io/inject: "true"`가 있는 Pod가 만들어질 때, 그 Deployment를 가리키는 정책을 읽어, 정책이 적은 container마다 ConfigMap volume, mount, env 네 개를 넣는다. Deployment는 고치지 않는다. 애노테이션은 Deployment의 `metadata`가 아니라 Pod 템플릿에 붙인다.
 - **웹훅은 정책만 읽는다.** Deployment 이름은 Pod 자신에게서 알아낸다(소유자 ReplicaSet 이름에서 `pod-template-hash`를 뗀다).
-- **전부 아니면 전무다.** 정책 하나라도 적용할 수 없으면 아무것도 넣지 않는다. 문제의 종류: 정책 없음, container 없음, `CONFIG_RELOAD_` env를 사용자가 이미 씀, mount 경로에 다른 것이 있음(같은 ConfigMap이면 그대로 쓴다), 한 container를 두 정책이 가리킴, Deployment의 Pod가 아님, 정책을 읽지 못함.
+- **전부 아니면 전무다.** container 하나라도 설정을 받을 수 없으면 아무것도 넣지 않는다. 문제의 종류: 정책 없음, container 없음, `CONFIG_RELOAD_` env를 사용자가 이미 씀, mount 경로에 다른 것이 있음(같은 ConfigMap이면 그대로 쓴다), 한 Deployment를 두 정책이 가리킴, 정책에 container 목록이 없음(0.2의 모양), Deployment의 Pod가 아님, 정책을 읽지 못함.
 - **`failurePolicy`가 문제를 어떻게 다룰지 정한다.** `Fail`(기본)이면 Pod를 거부하고 이유를 메시지에 적는다. `Ignore`면 사용자가 쓴 그대로 통과시킨다. 차트 값 `webhook.failurePolicy` 하나가 웹훅 등록(API server가 웹훅에 닿지 못했을 때)과 manager 인자 `--webhook-failure-policy`(웹훅이 문제를 발견했을 때) 양쪽에 들어간다. 둘이 어긋나면 안 된다.
-- **주입한 Pod에는 표시를 남긴다.** 애노테이션 `reload.nagisatosanae.github.io/injected`에 `정책이름@세대@UID`를 적는다. controller가 이것으로 센다. UID는 지웠다가 같은 이름으로 다시 만든 정책을 구별한다. 0.2.0이 남긴 `정책이름@세대`도 읽고, 그때는 세대만 비교한다. 이 표시가 이미 있는 Pod는 다시 주입하지 않는다.
+- **웹훅은 정책의 spec에 있는 값만 넣는다.** Pod에 넣는 값은 모두 spec에서 온다. 코드에 고정된 것은 env 이름, volume 이름의 앞부분처럼 넣는 방식뿐이다. spec에 없는 정보를 Pod에 반영하지 않는다.
+- **Deployment마다 정책은 하나다.** `PolicyChecker`는 정책을 만들 때(CREATE) 같은 Deployment를 가리키는 정책이 이미 있으면 거부한다. `workloadRef`는 고칠 수 없으므로 CREATE만 본다. 이 검사는 `--webhook-failure-policy`와 상관없이 거부한다. 정책을 거부해도 앱은 다치지 않기 때문이다. 동시에 만든 두 정책은 둘 다 통과할 수 있고, 그 경우는 Pod를 만들 때 문제로 잡힌다. 한 정책에 같은 container를 두 번 적는 것은 CRD의 목록 규칙(`listType=map`)이 막는다. 웹훅이 내려가 있으면 `Fail`에서는 정책을 새로 만들 수 없다.
+- **주입한 Pod에는 표시를 남긴다.** 애노테이션 `reload.nagisatosanae.github.io/injected`에 `container이름=해시`를 이름순으로, 쉼표로 이어 적는다(`markFor`). 해시는 정책이 그 container에 대해 적은 항목 전체로 만든다(`settingsHash`: JSON, FNV-1a 32비트. Kubernetes가 Pod 템플릿을 해시하는 방식과 같다). controller는 지금 정책으로 같은 표시를 만들어 Pod의 것과 통째로 비교한다. 같으면 지금 설정이고, 다르면 `Outdated`, 없으면 `NotInjected`다. 내용을 비교하므로, 지웠다가 같은 내용으로 다시 만든 정책은 기존 Pod를 그대로 `Injected`로 본다. 0.2가 남긴 표시(`정책이름@세대`, `정책이름@세대@UID`)는 따로 읽지 않는다. 그때의 정책은 새 모양으로 다시 써야 하므로 그 표시는 언제나 `Outdated`다. 이 표시가 이미 있는 Pod는 다시 주입하지 않는다.
+- **해시 만드는 방법은 바꾸지 않는다.** Pod는 뜰 때 받은 해시를 계속 갖고 있다. 방법이 바뀌면 upgrade 뒤에 돌고 있는 Pod가 전부 `Outdated`로 보인다. `TestSettingsHash`가 값을 고정해 둔다. container 항목에 기본값이 있는 필드를 추가해도 같은 일이 생긴다.
 - **Deployment는 apply할 때 검사한다.** `DeploymentChecker`는 Pod 템플릿으로 Pod를 만들어 `PodInjector.injectFor`를 돌려 보고 결과를 버린다. Pod 웹훅과 같은 코드이므로 두 판단이 어긋나지 않는다. `Fail`이면 거부하고 `Ignore`면 경고를 낸다. 삭제 중인 Deployment는 항상 통과시킨다.
-- **웹훅의 이름들이 두 곳에 있다**: 애노테이션, 경로 두 개(`/mutate--v1-pod`, `/validate-apps-v1-deployment`), 필터 식이 `internal/controller/`의 Go 파일과 `charts/config-reload-operator/templates/webhook.yaml`에 따로 적혀 있다. 하나를 바꾸면 다른 쪽도 같이 바꾼다. `TestChartMatchesTheWebhook`이 어긋남을 잡는다.
+- **웹훅의 이름들이 두 곳에 있다**: 애노테이션, 경로 세 개(`/mutate--v1-pod`, `/validate-apps-v1-deployment`, `/validate-reload-nagisatosanae-github-io-v1alpha1-configreloadpolicy`), 필터 식이 `internal/controller/`의 Go 파일과 `charts/config-reload-operator/templates/webhook.yaml`에 따로 적혀 있다. 하나를 바꾸면 다른 쪽도 같이 바꾼다. `TestChartMatchesTheWebhook`이 어긋남을 잡는다.
 - **웹훅은 인증서가 있을 때만 켜진다.** manager는 `--webhook-cert-path`가 있을 때만 웹훅을 등록한다. 인증서는 Helm이 만든다. cert-manager는 쓰지 않는다.
 
 **controller**
 
 - **controller는 정책의 status만 쓴다.** Deployment와 Pod는 읽기만 하고, 권한도 읽기뿐이다. 반복 reconcile이 무언가를 쓰면 버그다.
-- **status는 Pod를 세어 적는다.** `status.pods`는 그 Deployment의 Pod 중 애노테이션이 있는 것, `status.injectedPods`는 그중 정책의 현재 세대와 UID 표시를 가진 것이다. Ready의 reason은 `Injected`, `Accepted`, `NotInjected`, `Outdated`, `WorkloadNotFound`, `ContainerNotFound`, `NotOptedIn`이다.
+- **status는 Pod를 세어 적는다.** `status.pods`는 그 Deployment의 Pod 중 애노테이션이 있는 것, `status.injectedPods`는 그중 지금 정책이 만드는 표시와 같은 표시를 가진 것이다. Ready의 reason은 `Injected`, `Accepted`, `NotInjected`, `Outdated`, `WorkloadNotFound`, `ContainerNotFound`, `NotOptedIn`이다.
 - **Pod가 생기거나 없어지면 다시 본다.** Pod는 metadata만 캐시에 둔다. Ready가 아니면 30초, Ready면 5분 뒤에도 다시 본다.
 - **돌고 있는 것은 건드리지 않는다.** 정책을 지워도, 정책을 고쳐도 돌고 있는 Pod는 그대로다. 걷어내기도 다시 띄우기도 하지 않는다. finalizer도 없다. 0.1이 붙인 finalizer `reload.nagisatosanae.github.io/revert`는 떼어 주기만 한다.
 

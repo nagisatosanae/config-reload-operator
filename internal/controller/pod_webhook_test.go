@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -62,7 +61,7 @@ func injectorWebhookConfig() *admissionv1.MutatingWebhookConfiguration {
 			FailurePolicy:           &fail,
 			ClientConfig: admissionv1.WebhookClientConfig{
 				// envtest turns this into the address of the test server.
-				Service: &admissionv1.ServiceReference{Name: "webhook", Namespace: testNamespace, Path: &path},
+				Service: &admissionv1.ServiceReference{Name: webhookService, Namespace: testNamespace, Path: &path},
 			},
 			Rules: []admissionv1.RuleWithOperations{{
 				Operations: []admissionv1.OperationType{admissionv1.Create},
@@ -160,12 +159,10 @@ func mountConfigMap(pod *corev1.Pod, configMap, dir string) *corev1.Pod {
 	return pod
 }
 
-// wantMark is the mark a new Pod must carry for the policy as it is now:
-// its name, its generation and its UID.
+// wantMark is the mark a new Pod must carry for the policy as it is now.
 func wantMark(policy string) string {
 	GinkgoHelper()
-	p := getPolicy(policy)
-	return fmt.Sprintf("%s@%d@%s", p.Name, p.Generation, p.UID)
+	return markFor(getPolicy(policy))
 }
 
 // stored reads the Pod back from the API server.
@@ -235,7 +232,7 @@ var problems = []problem{
 		what: "the policy names a container it does not have", name: "odd",
 		prepare: func(*corev1.Pod) {
 			pol := newPolicy("odd-reload", "odd")
-			pol.Spec.ContainerName = otherContainer
+			pol.Spec.Containers[0].Name = otherContainer
 			create(pol)
 		},
 		message: `the Pod has no container named "sidecar"`,
@@ -266,12 +263,25 @@ var problems = []problem{
 		message: "with subPath",
 	},
 	{
-		what: "two policies name the same container", name: "twice",
+		what: "one of the two containers of the policy cannot get its settings", name: "half",
+		prepare: func(pod *corev1.Pod) {
+			pol := newPolicy("half-reload", "half")
+			pol.Spec.Containers = append(pol.Spec.Containers, helperSettings())
+			create(pol)
+			pod.Spec.Containers[0].Env = []corev1.EnvVar{{Name: envSignal, Value: "mine"}}
+		},
+		message: "already sets " + envSignal,
+	},
+	{
+		what: "two policies point at its Deployment", name: "twice",
 		prepare: func(*corev1.Pod) {
 			create(newPolicy("twice-a", "twice"))
+			// The check of a new policy does not let this happen. It is
+			// off here, as when two policies are made at the same moment.
+			testPolicyCheck.off()
 			create(newPolicy("twice-b", "twice"))
 		},
-		message: `both name container "nginx"`,
+		message: `both point at Deployment "twice"`,
 	},
 	{
 		what: "it does not belong to a Deployment", name: "bare",
@@ -327,9 +337,9 @@ var _ = Describe("Pod webhook", func() {
 	It("carries the reload settings of the policy", func() {
 		pol := newPolicy("tuned-reload", "tuned")
 		ten := int32(10)
-		pol.Spec.Reload.Signal = sigUSR1
-		pol.Spec.Reload.DebounceSeconds = &ten
-		pol.Spec.Reload.ValidateCommand = []string{"nginx", "-t"}
+		pol.Spec.Containers[0].Reload.Signal = sigUSR1
+		pol.Spec.Containers[0].Reload.DebounceSeconds = &ten
+		pol.Spec.Containers[0].Reload.ValidateCommand = []string{"nginx", "-t"}
 		create(pol)
 		pod := newPod("tuned")
 		create(pod)
@@ -353,13 +363,10 @@ var _ = Describe("Pod webhook", func() {
 		Expect(got.Annotations).To(HaveKey(InjectedAnnotation))
 	})
 
-	It("gives each container its own policy", func() {
-		create(newPolicy("pair-app", "pair"))
-		side := newPolicy("pair-helper", "pair")
-		side.Spec.ContainerName = helperContainer
-		side.Spec.ConfigMapRef.Name = "helper-config"
-		side.Spec.MountPath = helperMountPath
-		create(side)
+	It("gives every container of the policy its own settings", func() {
+		pol := newPolicy("pair-reload", "pair")
+		pol.Spec.Containers = append(pol.Spec.Containers, helperSettings())
+		create(pol)
 		pod := newPod("pair")
 		create(pod)
 
@@ -367,7 +374,11 @@ var _ = Describe("Pod webhook", func() {
 		Expect(addedVolumes(got)).To(HaveLen(2))
 		Expect(got.Spec.Containers[0].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: helperMountPath}))
 		Expect(got.Spec.Containers[1].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: mountPath}))
-		Expect(got.Annotations).To(HaveKeyWithValue(InjectedAnnotation, wantMark("pair-app")+","+wantMark("pair-helper")))
+
+		By("the mark names both containers, in the order of their names")
+		entries := getPolicy("pair-reload").Spec.Containers
+		Expect(got.Annotations).To(HaveKeyWithValue(InjectedAnnotation,
+			helperContainer+"="+settingsHash(&entries[1])+","+appContainer+"="+settingsHash(&entries[0])))
 	})
 
 	DescribeTable("rejects a Pod that cannot get its settings, and says why",
@@ -456,6 +467,7 @@ func TestChartMatchesTheWebhook(t *testing.T) {
 		"path":                     "path: " + injectPath,
 		"rule":                     injectCondition,
 		"path of the check":        "path: " + checkPath,
+		"path of the policy check": "path: " + policyCheckPath,
 		"rule of the check":        checkCondition,
 		"rule for deleted objects": `expression: "` + notDeletedCondition + `"`,
 	} {

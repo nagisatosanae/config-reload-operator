@@ -17,12 +17,15 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
 )
@@ -90,36 +93,91 @@ func TestDeploymentOf(t *testing.T) {
 	}
 }
 
-func TestInjectedMark(t *testing.T) {
-	const uid = "0b9d2c8e-6f1a-4d37-9a55-3c1e7f2b8a40"
-	tests := []struct {
-		name    string
-		mark    string
-		wantUID string
-		want    int64
-		found   bool
-	}{
-		{name: "no mark at all"},
-		{name: "the policy alone", mark: "web-reload@3@" + uid, wantUID: uid, want: 3, found: true},
-		{name: "the policy among others", mark: "another@1@" + uid + ",web-reload@7@" + uid, wantUID: uid, want: 7, found: true},
-		{name: "only another policy", mark: "another@1@" + uid},
-		{name: "a policy whose name starts the same", mark: "web-reload-2@4@" + uid},
-		{name: "a mark without a generation", mark: "web-reload"},
-		{name: "a generation that is not a number", mark: "web-reload@new@" + uid},
-		{name: "a mark of version 0.2.0, without a UID", mark: "web-reload@3", want: 3, found: true},
-		{name: "a mark of version 0.2.0 among others", mark: "another@1,web-reload@7", want: 7, found: true},
+func TestSettingsHash(t *testing.T) {
+	base := &newPolicy("web-reload", "web").Spec.Containers[0]
+
+	// The value is pinned. A Pod carries it for as long as it runs, so a
+	// change in how the hash is made would show every running Pod as
+	// outdated after an upgrade.
+	if got, want := settingsHash(base), "f7cb8bccb"; got != want {
+		t.Fatalf("settingsHash = %q, want %q", got, want)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			annotations := map[string]string{}
-			if tc.mark != "" {
-				annotations[InjectedAnnotation] = tc.mark
-			}
-			gotUID, got, found := injectedMark(annotations, "web-reload")
-			if found != tc.found || (found && (got != tc.want || gotUID != tc.wantUID)) {
-				t.Fatalf("got (%q, %d, %v), want (%q, %d, %v)", gotUID, got, found, tc.wantUID, tc.want, tc.found)
-			}
-		})
+
+	debounce := int32(9)
+	changes := map[string]func(*reloadv1alpha1.ContainerSettings){
+		"the container":     func(c *reloadv1alpha1.ContainerSettings) { c.Name = helperContainer },
+		"the ConfigMap":     func(c *reloadv1alpha1.ContainerSettings) { c.ConfigMapRef.Name = "other-config" },
+		"the path":          func(c *reloadv1alpha1.ContainerSettings) { c.MountPath = "/etc/other" },
+		"the signal":        func(c *reloadv1alpha1.ContainerSettings) { c.Reload.Signal = sigUSR1 },
+		"the quiet time":    func(c *reloadv1alpha1.ContainerSettings) { c.Reload.DebounceSeconds = &debounce },
+		"the check command": func(c *reloadv1alpha1.ContainerSettings) { c.Reload.ValidateCommand = []string{"haproxy", "-c"} },
+	}
+	for name, change := range changes {
+		changed := newPolicy("web-reload", "web").Spec.Containers[0]
+		change(&changed)
+		if settingsHash(&changed) == settingsHash(base) {
+			t.Errorf("an entry with another value for %s has the same hash", name)
+		}
+	}
+}
+
+func TestMarkFor(t *testing.T) {
+	policy := newPolicy("web-reload", "web")
+	app := policy.Spec.Containers[0]
+	if got, want := markFor(policy), appContainer+"="+settingsHash(&app); got != want {
+		t.Fatalf("markFor = %q, want %q", got, want)
+	}
+
+	// The name, the UID and the generation of the policy are not in the mark.
+	same := newPolicy("another-name", "web")
+	same.UID, same.Generation = "0b9d2c8e-6f1a-4d37-9a55-3c1e7f2b8a40", 7
+	if markFor(same) != markFor(policy) {
+		t.Fatal("two policies that say the same about the container have different marks")
+	}
+
+	// Two containers come in the order of their names, whatever the order in
+	// the policy is.
+	helper := helperSettings()
+	want := helperContainer + "=" + settingsHash(&helper) + "," + appContainer + "=" + settingsHash(&app)
+	policy.Spec.Containers = []reloadv1alpha1.ContainerSettings{app, helper}
+	if got := markFor(policy); got != want {
+		t.Fatalf("markFor = %q, want %q", got, want)
+	}
+	policy.Spec.Containers = []reloadv1alpha1.ContainerSettings{helper, app}
+	if got := markFor(policy); got != want {
+		t.Fatalf("with the containers the other way round markFor = %q, want %q", got, want)
+	}
+}
+
+// onePolicy is a reader that knows one policy and nothing else.
+type onePolicy struct {
+	policy reloadv1alpha1.ConfigReloadPolicy
+}
+
+func (onePolicy) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	return errors.New("not used")
+}
+
+func (o onePolicy) List(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
+	policies, ok := list.(*reloadv1alpha1.ConfigReloadPolicyList)
+	if !ok {
+		return errors.New("only policies can be listed")
+	}
+	policies.Items = []reloadv1alpha1.ConfigReloadPolicy{o.policy}
+	return nil
+}
+
+// A policy that was stored by an earlier version has no list of containers.
+// The API server does not let such a policy in any more, so the test hands
+// it to the webhook directly.
+func TestInjectForTurnsDownAPolicyOfAnEarlierVersion(t *testing.T) {
+	old := newPolicy("web-reload", "web")
+	old.Spec.Containers = nil
+	injector := &PodInjector{Client: onePolicy{policy: *old}}
+
+	_, err := injector.injectFor(context.Background(), testNamespace, "web", newPod("web"))
+	if err == nil || !strings.Contains(err.Error(), "names no container") {
+		t.Fatalf("err = %v, want the reason that the policy names no container", err)
 	}
 }
 
@@ -130,7 +188,7 @@ func TestEnsureMountAddsAVolumeWithANewName(t *testing.T) {
 	pod.Spec.Volumes = []corev1.Volume{{Name: volumePrefix + "mine"}}
 	app := &pod.Spec.Containers[1]
 
-	if err := ensureMount(pod, app, pol); err != nil {
+	if err := ensureMount(pod, app, &pol.Spec.Containers[0]); err != nil {
 		t.Fatal(err)
 	}
 	if len(pod.Spec.Volumes) != 2 {
@@ -153,7 +211,7 @@ func TestEnsureMountKnowsThePathWithASlashAtTheEnd(t *testing.T) {
 	pol := newPolicy("web-reload", "web")
 	pod := mountConfigMap(newPod("web"), "web-config", mountPath+"/")
 
-	if err := ensureMount(pod, &pod.Spec.Containers[1], pol); err != nil {
+	if err := ensureMount(pod, &pod.Spec.Containers[1], &pol.Spec.Containers[0]); err != nil {
 		t.Fatal(err)
 	}
 	if len(pod.Spec.Volumes) != 1 {
@@ -162,12 +220,11 @@ func TestEnsureMountKnowsThePathWithASlashAtTheEnd(t *testing.T) {
 }
 
 func TestWatcherEnv(t *testing.T) {
-	var pol reloadv1alpha1.ConfigReloadPolicy
-	pol.Spec.MountPath = "/d"
+	c := reloadv1alpha1.ContainerSettings{MountPath: "/d"}
 
 	// Nothing else set, as when the object never went through the API
 	// server: the safety-net defaults apply.
-	got := watcherEnv(&pol)
+	got := watcherEnv(&c)
 	want := []corev1.EnvVar{ev(envWatchDir, "/d"), ev(envSignal, "SIGHUP"), ev(envDebounce, "3")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("defaults: got %v, want %v", got, want)
@@ -176,12 +233,12 @@ func TestWatcherEnv(t *testing.T) {
 	// Everything set. The check command becomes JSON, so a quote inside a
 	// word survives the trip through one env string.
 	ten := int32(10)
-	pol.Spec.Reload = reloadv1alpha1.ReloadSpec{
+	c.Reload = reloadv1alpha1.ReloadSpec{
 		Signal:          sigUSR1,
 		DebounceSeconds: &ten,
 		ValidateCommand: []string{"sh", "-c", `echo "a b"`},
 	}
-	got = watcherEnv(&pol)
+	got = watcherEnv(&c)
 	want = []corev1.EnvVar{
 		ev(envWatchDir, "/d"),
 		ev(envSignal, sigUSR1),

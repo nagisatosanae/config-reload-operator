@@ -4,10 +4,10 @@ description: Reloads an app by signal when its ConfigMap changes, without replac
 type: application
 
 # Version of the chart.
-version: 0.2.2
+version: 0.4.0
 
 # Version of the controller. It is also the default image tag.
-appVersion: "0.2.1"
+appVersion: "0.4.0"
 
 # The webhook uses matchConditions, which is stable since Kubernetes 1.30.
 # The "-0" lets versions with a suffix through, such as v1.30.5-gke.1.

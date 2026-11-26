@@ -79,23 +79,15 @@ type ReloadSpec struct {
 	ValidateCommand []string `json:"validateCommand,omitempty"`
 }
 
-// ConfigReloadPolicySpec defines the desired state of ConfigReloadPolicy.
-type ConfigReloadPolicySpec struct {
-	// workloadRef is the workload to reload. It cannot be changed after the
-	// policy is created. To point at another workload, delete the policy and
-	// create a new one. Pods of the old workload keep their settings until
-	// they are replaced.
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="workloadRef cannot be changed. Delete the policy and create a new one."
-	// +required
-	WorkloadRef WorkloadRef `json:"workloadRef"`
-
-	// containerName is the container that runs the watcher and the app. It
-	// cannot be changed after the policy is created either.
+// ContainerSettings says what one container of the workload gets: which
+// ConfigMap, where it is mounted, and how the app is told to reload.
+type ContainerSettings struct {
+	// name is the container that runs the watcher and the app. A container
+	// can be named only once in a policy.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="containerName cannot be changed. Delete the policy and create a new one."
 	// +required
-	ContainerName string `json:"containerName"`
+	Name string `json:"name"`
 
 	// configMapRef is the ConfigMap mounted into that container.
 	// +required
@@ -115,6 +107,26 @@ type ConfigReloadPolicySpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	Reload ReloadSpec `json:"reload,omitzero"`
+}
+
+// ConfigReloadPolicySpec defines the desired state of ConfigReloadPolicy.
+type ConfigReloadPolicySpec struct {
+	// workloadRef is the workload to reload. A workload can have only one
+	// policy. It cannot be changed after the policy is created. To point at
+	// another workload, delete the policy and create a new one. Pods of the
+	// old workload keep their settings until they are replaced.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="workloadRef cannot be changed. Delete the policy and create a new one."
+	// +required
+	WorkloadRef WorkloadRef `json:"workloadRef"`
+
+	// containers lists the containers of the workload that get the watcher
+	// settings, one entry for each container.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=map
+	// +listMapKey=name
+	// +required
+	Containers []ContainerSettings `json:"containers"`
 }
 
 // ConfigReloadPolicyStatus defines the observed state of ConfigReloadPolicy.

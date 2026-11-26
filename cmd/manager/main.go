@@ -230,6 +230,12 @@ func main() {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "deployment")
 			os.Exit(1)
 		}
+		// A Deployment can have only one policy. A second one is turned down
+		// when it is created.
+		if err := (&controller.PolicyChecker{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "policy")
+			os.Exit(1)
+		}
 		// The Pod is not ready until the webhook server is listening.
 		if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
 			setupLog.Error(err, "Failed to set up webhook ready check")

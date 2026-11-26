@@ -48,6 +48,11 @@ const (
 	mountPath      = "/etc/nginx/conf.d"
 	tz             = "Asia/Seoul"
 	sigUSR1        = "SIGUSR1"
+	// holdFinalizer keeps an object there after it was deleted.
+	holdFinalizer = "example.com/hold"
+	// webhookService is the name the test webhooks are registered under.
+	// envtest turns it into the address of the test server.
+	webhookService = "webhook"
 )
 
 // newDeployment returns a Deployment like the demo: a helper container
@@ -75,16 +80,28 @@ func newDeployment(name string) *appsv1.Deployment {
 	}
 }
 
-// newPolicy returns a policy for the Deployment made by newDeployment.
+// newPolicy returns a policy for the Deployment made by newDeployment. It
+// names one container, the app.
 func newPolicy(name, deployment string) *reloadv1alpha1.ConfigReloadPolicy {
 	return &reloadv1alpha1.ConfigReloadPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Spec: reloadv1alpha1.ConfigReloadPolicySpec{
-			WorkloadRef:   reloadv1alpha1.WorkloadRef{Name: deployment},
-			ContainerName: appContainer,
-			ConfigMapRef:  reloadv1alpha1.ConfigMapRef{Name: deployment + "-config"},
-			MountPath:     mountPath,
+			WorkloadRef: reloadv1alpha1.WorkloadRef{Name: deployment},
+			Containers: []reloadv1alpha1.ContainerSettings{{
+				Name:         appContainer,
+				ConfigMapRef: reloadv1alpha1.ConfigMapRef{Name: deployment + "-config"},
+				MountPath:    mountPath,
+			}},
 		},
+	}
+}
+
+// helperSettings returns settings for the other container of newDeployment.
+func helperSettings() reloadv1alpha1.ContainerSettings {
+	return reloadv1alpha1.ContainerSettings{
+		Name:         helperContainer,
+		ConfigMapRef: reloadv1alpha1.ConfigMapRef{Name: "helper-config"},
+		MountPath:    helperMountPath,
 	}
 }
 
@@ -149,9 +166,9 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		create(newPolicy("defaults-reload", "defaults"))
 		pol := getPolicy("defaults-reload")
 		Expect(pol.Spec.WorkloadRef.Kind).To(Equal("Deployment"))
-		Expect(pol.Spec.Reload.Signal).To(Equal("SIGHUP"))
-		Expect(pol.Spec.Reload.DebounceSeconds).To(HaveValue(BeEquivalentTo(3)))
-		Expect(pol.Spec.Reload.ValidateCommand).To(BeEmpty())
+		Expect(pol.Spec.Containers[0].Reload.Signal).To(Equal("SIGHUP"))
+		Expect(pol.Spec.Containers[0].Reload.DebounceSeconds).To(HaveValue(BeEquivalentTo(3)))
+		Expect(pol.Spec.Containers[0].Reload.ValidateCommand).To(BeEmpty())
 	})
 
 	It("is Ready before there are Pods, when the Deployment asks for the settings", func() {
@@ -213,7 +230,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		create(newPod("aged"))
 
 		pol := getPolicy("aged-reload")
-		pol.Spec.Reload.Signal = sigUSR1
+		pol.Spec.Containers[0].Reload.Signal = sigUSR1
 		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
 		_, err := runReconcile("aged-reload")
 		Expect(err).NotTo(HaveOccurred())
@@ -241,6 +258,26 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(readyCondition("aged-reload").Reason).To(Equal(reasonOutdated))
 	})
 
+	It("finds its Pods current when it is deleted and made again with the same settings", func() {
+		create(newDeployment("again"))
+		create(newPolicy("again-reload", "again"))
+		create(newPod("again"))
+		first := getPolicy("again-reload")
+
+		Expect(k8sClient.Delete(ctx, first)).To(Succeed())
+		Expect(policyExists("again-reload")).To(BeFalse())
+		create(newPolicy("again-reload", "again"))
+		Expect(getPolicy("again-reload").UID).NotTo(Equal(first.UID), "it is a new object")
+
+		_, err := runReconcile("again-reload")
+		Expect(err).NotTo(HaveOccurred())
+
+		status := getPolicy("again-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(1))
+		Expect(status.InjectedPods).To(BeEquivalentTo(1))
+		Expect(readyCondition("again-reload").Reason).To(Equal(reasonInjected))
+	})
+
 	It("reports Pods that carry the settings of an earlier policy with the same name", func() {
 		create(newDeployment("reborn"))
 		create(newPolicy("reborn-reload", "reborn"))
@@ -249,11 +286,11 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 
 		// The policy is deleted and made again with another signal. The new
 		// one starts at generation 1 again, the generation the Pod was
-		// made under. Only the UID is new.
+		// made under. What tells them apart is the hash of the settings.
 		Expect(k8sClient.Delete(ctx, first)).To(Succeed())
 		Expect(policyExists("reborn-reload")).To(BeFalse())
 		again := newPolicy("reborn-reload", "reborn")
-		again.Spec.Reload.Signal = sigUSR1
+		again.Spec.Containers[0].Reload.Signal = sigUSR1
 		create(again)
 		second := getPolicy("reborn-reload")
 		Expect(second.Generation).To(Equal(first.Generation))
@@ -276,30 +313,50 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(status.InjectedPods).To(BeEquivalentTo(1))
 	})
 
-	It("still counts a Pod that version 0.2.0 marked, by the generation alone", func() {
-		create(newDeployment("legacy"))
-		create(newPolicy("legacy-reload", "legacy"))
-		// A Pod that went through the webhook of version 0.2.0. Its mark has
-		// no UID. The webhook leaves a Pod alone that already has a mark.
-		pod := newPod("legacy")
-		pod.Annotations[InjectedAnnotation] = "legacy-reload@1"
-		create(pod)
+	It("reports a Pod that got its settings before a container was added to the policy", func() {
+		create(newDeployment("grown"))
+		create(newPolicy("grown-reload", "grown"))
+		create(newPod("grown"))
 
-		_, err := runReconcile("legacy-reload")
-		Expect(err).NotTo(HaveOccurred())
-		status := getPolicy("legacy-reload").Status
-		Expect(status.Pods).To(BeEquivalentTo(1))
-		Expect(status.InjectedPods).To(BeEquivalentTo(1))
-		Expect(readyCondition("legacy-reload").Reason).To(Equal(reasonInjected))
-
-		By("a change of the policy still shows it as outdated")
-		pol := getPolicy("legacy-reload")
-		pol.Spec.Reload.Signal = sigUSR1
+		pol := getPolicy("grown-reload")
+		pol.Spec.Containers = append(pol.Spec.Containers, helperSettings())
 		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
-		_, err = runReconcile("legacy-reload")
+		_, err := runReconcile("grown-reload")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(getPolicy("legacy-reload").Status.InjectedPods).To(BeZero())
-		Expect(readyCondition("legacy-reload").Reason).To(Equal(reasonOutdated))
+
+		status := getPolicy("grown-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(1))
+		Expect(status.InjectedPods).To(BeZero())
+		Expect(readyCondition("grown-reload").Reason).To(Equal(reasonOutdated))
+
+		By("a new Pod gets the settings of both containers and is counted")
+		create(newPod("grown"))
+		_, err = runReconcile("grown-reload")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getPolicy("grown-reload").Status.InjectedPods).To(BeEquivalentTo(1))
+	})
+
+	It("reports a Pod that an earlier version marked as outdated", func() {
+		create(newDeployment("marked"))
+		create(newPolicy("marked-reload", "marked"))
+		pol := getPolicy("marked-reload")
+		// Versions 0.2.0 and 0.2.1 wrote the name and the generation of the
+		// policy, and 0.2.1 its UID too. A policy of that time has to be
+		// written again for this version, so such a mark never stands for
+		// the settings of now. The webhook leaves a Pod alone that has a
+		// mark.
+		for _, mark := range []string{"marked-reload@1", "marked-reload@1@" + string(pol.UID)} {
+			pod := newPod("marked")
+			pod.Annotations[InjectedAnnotation] = mark
+			create(pod)
+		}
+
+		_, err := runReconcile("marked-reload")
+		Expect(err).NotTo(HaveOccurred())
+		status := getPolicy("marked-reload").Status
+		Expect(status.Pods).To(BeEquivalentTo(2))
+		Expect(status.InjectedPods).To(BeZero())
+		Expect(readyCondition("marked-reload").Reason).To(Equal(reasonOutdated))
 	})
 
 	It("counts only Pods of its own Deployment that ask for the settings and are not on their way out", func() {
@@ -319,7 +376,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 
 		By("a Pod that is being deleted")
 		leaving := newPod("picky")
-		leaving.Finalizers = []string{"example.com/hold"}
+		leaving.Finalizers = []string{holdFinalizer}
 		create(leaving)
 		Expect(k8sClient.Delete(ctx, leaving)).To(Succeed())
 		DeferCleanup(func() {
@@ -356,12 +413,8 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(getPolicy("idle-reload").ResourceVersion).To(Equal(polVersion), "the status was written again")
 	})
 
-	It("knows which policies to look at again when a Pod comes or goes", func() {
-		create(newPolicy("wake-app", "wake"))
-		side := newPolicy("wake-helper", "wake")
-		side.Spec.ContainerName = helperContainer
-		side.Spec.MountPath = helperMountPath
-		create(side)
+	It("knows which policy to look at again when a Pod comes or goes", func() {
+		create(newPolicy("wake-reload", "wake"))
 		create(newPolicy("other-reload", "other"))
 		r := &ConfigReloadPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
@@ -370,7 +423,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		for _, request := range requests {
 			names = append(names, request.Name)
 		}
-		Expect(names).To(ConsistOf("wake-app", "wake-helper"))
+		Expect(names).To(ConsistOf("wake-reload"))
 
 		plain := newPod("wake")
 		plain.Annotations = nil
@@ -401,7 +454,13 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 			}, reasonWorkloadNotFound),
 		Entry("the container is not there", "nocontainer",
 			func(_ *appsv1.Deployment, pol *reloadv1alpha1.ConfigReloadPolicy) {
-				pol.Spec.ContainerName = otherContainer
+				pol.Spec.Containers[0].Name = otherContainer
+			}, reasonContainerNotFound),
+		Entry("one of two containers is not there", "halfthere",
+			func(_ *appsv1.Deployment, pol *reloadv1alpha1.ConfigReloadPolicy) {
+				missing := helperSettings()
+				missing.Name = otherContainer
+				pol.Spec.Containers = append(pol.Spec.Containers, missing)
 			}, reasonContainerNotFound),
 		Entry("the Pod template does not ask for the settings", "plain",
 			func(dep *appsv1.Deployment, _ *reloadv1alpha1.ConfigReloadPolicy) {
@@ -434,65 +493,75 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 			Expect(err).To(MatchError(apierrors.IsInvalid, "an Invalid error"))
 		},
 		Entry("a signal that is not in the list", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
-			pol.Spec.Reload.Signal = "SIGKILL"
+			pol.Spec.Containers[0].Reload.Signal = "SIGKILL"
 		}),
 		Entry("a negative quiet time", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
 			minus := int32(-1)
-			pol.Spec.Reload.DebounceSeconds = &minus
+			pol.Spec.Containers[0].Reload.DebounceSeconds = &minus
 		}),
 		Entry("an empty word in the check command", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
-			pol.Spec.Reload.ValidateCommand = []string{"nginx", ""}
+			pol.Spec.Containers[0].Reload.ValidateCommand = []string{"nginx", ""}
 		}),
 		Entry("no workload name", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
 			pol.Spec.WorkloadRef.Name = ""
 		}),
 		Entry("no mount path", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
-			pol.Spec.MountPath = ""
+			pol.Spec.Containers[0].MountPath = ""
 		}),
 		Entry("a mount path that does not start at the root", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
-			pol.Spec.MountPath = "etc/nginx/conf.d"
+			pol.Spec.Containers[0].MountPath = "etc/nginx/conf.d"
 		}),
 		Entry("a mount path with a slash at the end", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
-			pol.Spec.MountPath = mountPath + "/"
+			pol.Spec.Containers[0].MountPath = mountPath + "/"
+		}),
+		Entry("no container", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
+			pol.Spec.Containers = nil
+		}),
+		Entry("the same container twice", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
+			again := helperSettings()
+			again.Name = appContainer
+			pol.Spec.Containers = append(pol.Spec.Containers, again)
 		}),
 	)
 
-	DescribeTable("does not let the target of a policy change",
-		func(change func(pol *reloadv1alpha1.ConfigReloadPolicy), field string) {
-			const name = "fixed"
-			policy := name + "-reload"
-			create(newDeployment(name))
-			create(newPolicy(policy, name))
-
-			pol := getPolicy(policy)
-			change(pol)
-			err := k8sClient.Update(ctx, pol)
-			Expect(err).To(MatchError(apierrors.IsInvalid, "an Invalid error"))
-			Expect(err.Error()).To(ContainSubstring(field + " cannot be changed"))
-
-			By("leaving the stored policy as it was")
-			kept := getPolicy(policy)
-			Expect(kept.Spec.WorkloadRef.Name).To(Equal(name))
-			Expect(kept.Spec.ContainerName).To(Equal(appContainer))
-		},
-		Entry("to another Deployment", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
-			pol.Spec.WorkloadRef.Name = "elsewhere"
-		}, "workloadRef"),
-		Entry("to another container", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
-			pol.Spec.ContainerName = otherContainer
-		}, "containerName"),
-	)
-
-	It("still lets the other fields of a policy change", func() {
-		const name = "free"
+	It("does not let the Deployment of a policy change", func() {
+		const name = "fixed"
 		policy := name + "-reload"
 		create(newDeployment(name))
 		create(newPolicy(policy, name))
 
 		pol := getPolicy(policy)
-		pol.Spec.ConfigMapRef.Name = name + "-settings"
-		pol.Spec.MountPath = "/etc/nginx/templates"
-		pol.Spec.Reload.Signal = sigUSR1
+		pol.Spec.WorkloadRef.Name = "elsewhere"
+		err := k8sClient.Update(ctx, pol)
+		Expect(err).To(MatchError(apierrors.IsInvalid, "an Invalid error"))
+		Expect(err.Error()).To(ContainSubstring("workloadRef cannot be changed"))
+
+		By("leaving the stored policy as it was")
+		Expect(getPolicy(policy).Spec.WorkloadRef.Name).To(Equal(name))
+	})
+
+	It("lets the containers of a policy change", func() {
+		const name = "free"
+		policy := name + "-reload"
+		create(newDeployment(name))
+		create(newPolicy(policy, name))
+
+		By("other settings for a container")
+		pol := getPolicy(policy)
+		pol.Spec.Containers[0].ConfigMapRef.Name = name + "-settings"
+		pol.Spec.Containers[0].MountPath = "/etc/nginx/templates"
+		pol.Spec.Containers[0].Reload.Signal = sigUSR1
+		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
+
+		By("one more container")
+		pol = getPolicy(policy)
+		pol.Spec.Containers = append(pol.Spec.Containers, helperSettings())
+		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
+		Expect(getPolicy(policy).Spec.Containers[1].Reload.Signal).To(Equal("SIGHUP"), "the new entry gets the defaults")
+
+		By("one container less")
+		pol = getPolicy(policy)
+		pol.Spec.Containers = pol.Spec.Containers[1:]
 		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
 	})
 
