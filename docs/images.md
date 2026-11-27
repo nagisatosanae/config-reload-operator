@@ -98,6 +98,7 @@ user.
 
 ## First push
 
-A package on ghcr.io starts out private. After the first push, open the
-package on GitHub (your profile, Packages tab), go to Package settings and
-change the visibility to public. Then clusters can pull it without a login.
+A new package on ghcr.io can start out private, and a cluster cannot pull
+a private image without a login. After the first push of an image, open the
+package on GitHub (your profile, Packages tab) and look at its visibility.
+If it is private, go to Package settings and change it to public.
