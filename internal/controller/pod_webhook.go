@@ -233,9 +233,9 @@ func deploymentOf(pod metav1.Object) (string, error) {
 // there, so the same entry gives a Pod the same settings, whatever the
 // policy is called.
 //
-// It is made the way Kubernetes hashes a Pod template: the content as
-// JSON, FNV-1a with 32 bits, written in letters and digits that cannot
-// spell a word.
+// The content goes in as JSON. The hash is FNV-1a with 32 bits, written in
+// letters and digits that cannot spell a word. Kubernetes uses the same
+// function and the same letters for the pod-template-hash of a ReplicaSet.
 func settingsHash(c *reloadv1alpha1.ContainerSettings) string {
 	// A struct of strings, numbers and lists always turns into JSON, so the
 	// error is ignored.

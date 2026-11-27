@@ -276,8 +276,9 @@ type memory struct {
 	// started is when we began. Nothing is reloaded before the grace time
 	// after it has passed.
 	started time.Time
-	// running is the hash of the config the app is running. It only moves
-	// forward when a reload was really sent.
+	// running is the hash of the config the app was last told to load. It
+	// moves forward when a new config has passed the check, right before
+	// the signal is sent.
 	running string
 }
 
