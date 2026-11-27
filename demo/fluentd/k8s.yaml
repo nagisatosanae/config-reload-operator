@@ -1,0 +1,49 @@
+# Local demo: one Fluentd Deployment whose configuration comes from a
+# ConfigMap. The Deployment does not mount it. The operator does that for
+# every new Pod, from the policy in config/samples, because of the annotation
+# on the Pod template. Fluentd writes one record a second to its log. Change
+# "v1" in the record to "v2", re-apply, and watch.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: demo
+data:
+  fluent.conf: |
+    <source>
+      @type sample
+      sample {"config":"v1"}
+      tag demo
+    </source>
+
+    <match demo>
+      @type stdout
+    </match>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fluentd-demo
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fluentd-demo
+  template:
+    metadata:
+      labels:
+        app: fluentd-demo
+      annotations:
+        # Asks for the watcher settings. It is on the Pod template, so every
+        # Pod carries it.
+        reload.nagisatosanae.github.io/inject: "true"
+    spec:
+      containers:
+        - name: fluentd
+          image: ghcr.io/nagisatosanae/config-reload-operator/demo-fluentd:0.5.0

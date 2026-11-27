@@ -75,9 +75,9 @@ Every config change after that:
   the ConfigMap changes
     --> the kubelet updates the files in the Pod (up to about 90 seconds)
     --> the watcher sees new content and waits for a quiet moment
-    --> the watcher runs the check command, for example "nginx -t"
+    --> the watcher runs the check command, for example "fluentd --dry-run"
     --> the watcher sends SIGHUP to the app
-    --> the app reads its config again: same Pod, same process
+    --> the app reads its config again: same Pod, no restart
 ```
 
 Most of the time between a ConfigMap change and the reload is the kubelet.
@@ -99,26 +99,26 @@ in [docs/design.md](docs/design.md).
 
 | What it does | Why it helps |
 |---|---|
-| Sends a signal instead of restarting the Pod. | Connections and data in memory stay. Nothing has to start again. |
+| Sends a signal instead of restarting the Pod. | The Pod stays, with its address and its volumes. No new Pod has to be scheduled and started. The app reloads the way it was built to. |
 | Compares the content of the files, not the file events. | No reload when nothing really changed. |
 | Waits for a quiet time, 3 seconds by default. | The six file events of one ConfigMap update become one reload. |
-| Can run a check command first, such as `nginx -t`. | A broken config is not loaded. The app keeps running with the old one. |
+| Can run a check command first, such as `fluentd --dry-run`. | A broken config is not loaded. The app keeps running with the old one. |
 | The app is PID 1 and the watcher runs next to it. | Stop signals reach the app directly, and the container exits with the app's exit code. A watcher that fails cannot stop the app. |
 | Settings come from a policy, not from the image. | One image works for any path and any signal. |
 | The policy has a status. | A Deployment, a container or an annotation that is missing shows up as `Ready=False` with a reason, and you see how many Pods carry the settings. The status does not look inside a Pod: a watcher that stopped or a check that failed is only in the Pod's log. |
 | Only new Pods get the settings. | Your Deployment is never changed and a Pod that runs is never touched, so there are no surprise rollouts. |
 | Deleting a policy changes nothing that runs. | Pods keep their settings until they are replaced. |
 
-Measured on a real cluster with the NGINX demo: one ConfigMap update made
-six file events and one `SIGHUP`. The NGINX master process kept its PID. The
-Pod UID and the restart count did not change.
+Measured on a real cluster with the Fluentd demo: one ConfigMap update made
+six file events and one `SIGHUP`. The Fluentd supervisor kept its PID and
+started a new worker. The Pod UID and the restart count did not change.
 
 ## Quick start
 
 You need a Kubernetes cluster of version 1.30 or newer (kind, minikube or
 Docker Desktop), `kubectl` and Helm 3 or newer.
 
-![Demo: NGINX goes from v1 to v2 in the same Pod](docs/demo.gif)
+![Demo: Fluentd goes from v1 to v2 in the same Pod](docs/demo.gif)
 
 The GIF shows steps 3 to 5 below. It is drawn from the output of a real run,
 and the wait for the kubelet is cut out.
@@ -140,47 +140,48 @@ there. So this step is safe to run again. `--wait` comes back when the
 webhook and the controller are ready. Without it the next step can fail,
 because the webhook does not answer yet.
 
-**2. Add a policy and start the demo app.** The demo is NGINX with the
-watcher in its image. Its config comes from the ConfigMap `nginx-config`.
+**2. Add a policy and start the demo app.** The demo is Fluentd with the
+watcher in its image. Its config comes from the ConfigMap `fluentd-config`.
+It writes one record a second to its log, and the record names the config.
 The policy goes in first. A Deployment whose Pods could not get their
 settings is turned down when you apply it.
 
 ```sh
 kubectl create namespace demo --save-config
 kubectl apply -f config/samples/reload_v1alpha1_configreloadpolicy.yaml
-kubectl apply -f demo/nginx/k8s.yaml
-kubectl rollout status deployment/nginx-demo -n demo
-kubectl wait --for=condition=Ready configreloadpolicy/nginx-reload -n demo --timeout=60s
+kubectl apply -f demo/fluentd/k8s.yaml
+kubectl rollout status deployment/fluentd-demo -n demo
+kubectl wait --for=condition=Ready configreloadpolicy/fluentd-reload -n demo --timeout=60s
 kubectl get configreloadpolicies -n demo
 ```
 
 ```text
-NAME           WORKLOAD     READY   REASON     PODS   INJECTED   AGE
-nginx-reload   nginx-demo   True    Injected   1      1          30s
+NAME             WORKLOAD       READY   REASON     PODS   INJECTED   AGE
+fluentd-reload   fluentd-demo   True    Injected   1      1          30s
 ```
 
 The Pod template of the demo Deployment has the annotation
 `reload.nagisatosanae.github.io/inject: "true"`. So the webhook gives the
 new Pod the ConfigMap volume, its mount and the watcher's settings. The
 Deployment has none of them, and
-`kubectl get deployment nginx-demo -n demo -o yaml` shows it as you applied
-it. The Pod starts one time and is not replaced in the next steps.
+`kubectl get deployment fluentd-demo -n demo -o yaml` shows it as you
+applied it. The Pod starts one time and is not replaced in the next steps.
 
-**3. Look at the Pod and its answer.** Remember the Pod name.
+**3. Look at the Pod and its log.** Remember the Pod name.
 
 ```sh
 kubectl get pods -n demo
-kubectl exec -n demo deploy/nginx-demo -- wget -qO- http://127.0.0.1/
+kubectl logs -n demo deploy/fluentd-demo --tail=1
 ```
 
 ```text
-v1
+2026-11-27 13:46:24.008892263 +0000 demo: {"config":"v1"}
 ```
 
 **4. Change the config from v1 to v2.**
 
 ```sh
-sed -e 's/Version v1;/Version v2;/' -e 's/"v1/"v2/' demo/nginx/k8s.yaml | kubectl apply -f -
+sed 's/"v1"/"v2"/' demo/fluentd/k8s.yaml | kubectl apply -f -
 ```
 
 **5. Follow the watcher log.** The kubelet needs up to about a minute and a
@@ -188,60 +189,64 @@ half to bring the new files into the Pod. This command stays open and shows
 the lines when it happens.
 
 ```sh
-kubectl logs -f -n demo deploy/nginx-demo | grep -E "content changed|sending"
+kubectl logs -f -n demo deploy/fluentd-demo | grep -E "content changed|sending"
 ```
 
 ```text
-2026/11/10 07:02:05 6 events, content changed
-2026/11/10 07:02:05 sending SIGHUP
+2026/11/27 13:47:31 6 events, content changed
+2026/11/27 13:47:31 sending SIGHUP
 ```
 
-When you see these two lines, press `Ctrl+C`. Then look at the answer and
-the Pod.
+When you see these two lines, press `Ctrl+C`. Fluentd now starts a new
+worker with the new config, which takes a second or two. Then look at the
+log and the Pod.
 
 ```sh
-kubectl exec -n demo deploy/nginx-demo -- wget -qO- http://127.0.0.1/
+kubectl logs -n demo deploy/fluentd-demo --tail=1
 kubectl get pods -n demo
 ```
 
 ```text
-v2
+2026-11-27 13:47:43.045229769 +0000 demo: {"config":"v2"}
 ```
 
-The answer is `v2`. The Pod name is the same and `RESTARTS` is still 0.
+The record says `v2`. The Pod name is the same and `RESTARTS` is still 0.
 
-**6. Try a broken config.** This takes the `;` away after `listen 80`.
+**6. Try a broken config.** This misspells the output plugin: `stdout`
+becomes `stdot`.
 
 ```sh
-sed -e 's/Version v1;/Version v2;/' -e 's/"v1/"v2/' -e 's/listen 80;/listen 80/' demo/nginx/k8s.yaml | kubectl apply -f -
+sed -e 's/"v1"/"v2"/' -e 's/@type stdout/@type stdot/' demo/fluentd/k8s.yaml | kubectl apply -f -
 ```
 
 Follow the log again. After up to about a minute and a half it shows that
 the check failed. Press `Ctrl+C` when you see the line.
 
 ```sh
-kubectl logs -f -n demo deploy/nginx-demo | grep "check failed"
+kubectl logs -f -n demo deploy/fluentd-demo | grep "check failed"
 ```
 
 ```text
-2026/11/10 07:48:58 check failed, not reloading: nginx: exit status 1: ... directive "listen" is not terminated by ";" in /etc/nginx/conf.d/default.conf:3
+2026/11/27 13:48:52 check failed, not reloading: fluentd: exit status 1: ... error="Unknown output plugin 'stdot'. Run 'gem search -rd fluent-plugin' to find plugins"
 ```
 
-No signal was sent, and NGINX still answers `v2`.
+No signal was sent, and Fluentd still writes `v2`. Without the check this
+config would have stopped Fluentd: a reload ends its worker, and the new
+worker cannot start with a plugin that does not exist.
 
 ```sh
-kubectl exec -n demo deploy/nginx-demo -- wget -qO- http://127.0.0.1/
+kubectl logs -n demo deploy/fluentd-demo --tail=1
 ```
 
 ```text
-v2
+2026-11-27 13:49:03.031055334 +0000 demo: {"config":"v2"}
 ```
 
 **7. Clean up.**
 
 ```sh
 kubectl delete -f config/samples/reload_v1alpha1_configreloadpolicy.yaml
-kubectl delete -f demo/nginx/k8s.yaml
+kubectl delete -f demo/fluentd/k8s.yaml
 helm uninstall config-reload-operator --namespace config-reload-operator-system
 ```
 
@@ -255,29 +260,32 @@ kind delete cluster && kind create cluster
 
 ## Use it with your own app
 
-The steps below use NGINX as the example. NGINX does not read its config
-again by itself when the file changes. Something has to send it a signal.
-These steps make the watcher do that. Any other app that reloads on a signal
-works the same way.
+The steps below use Fluentd as the example. Fluentd does not read its
+config again by itself when the file changes. Something has to send it a
+signal. These steps make the watcher do that. Any other app that reloads on
+a signal works the same way.
 
 **1. Put the watcher in your image.** It is one static binary and a small
 start script. Copy both, make the script the entrypoint, and give it the
 command your image ran before.
 
 ```dockerfile
-FROM nginx:stable-alpine
-COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.4.0 \
+FROM fluent/fluentd:v1.20-debian-1
+COPY --from=ghcr.io/nagisatosanae/config-reload-operator/watcher:0.5.0 \
      /watcher /watcher-entrypoint.sh /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/watcher-entrypoint.sh"]
-CMD ["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
+CMD ["tini", "--", "/bin/entrypoint.sh", "fluentd"]
 ```
 
 `CMD` is what the base image ran before: its `ENTRYPOINT` followed by its
 `CMD`. This command shows both:
 
 ```sh
-docker inspect --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' nginx:stable-alpine
+docker inspect --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' fluent/fluentd:v1.20-debian-1
 ```
+
+The Fluentd image starts with `tini`, so `tini` is PID 1 here, as it is
+without the watcher. It hands the watcher's signal on to Fluentd.
 
 The script needs a shell in the image. Without a policy it only starts the
 app, so the image is safe to use anywhere. A `command:` on the container in
@@ -291,20 +299,20 @@ has one policy. The policy lists the containers that get the settings.
 apiVersion: reload.nagisatosanae.github.io/v1alpha1
 kind: ConfigReloadPolicy
 metadata:
-  name: nginx-reload
+  name: fluentd-reload
   namespace: demo
 spec:
   workloadRef:
-    name: nginx-demo
+    name: fluentd-demo
   containers:
-    - name: nginx
+    - name: fluentd
       configMapRef:
-        name: nginx-config
-      mountPath: /etc/nginx/conf.d
+        name: fluentd-config
+      mountPath: /fluentd/etc
       reload:
         signal: SIGHUP
         debounceSeconds: 3
-        validateCommand: ["nginx", "-t"]
+        validateCommand: ["fluentd", "--dry-run", "-q", "-c", "/fluentd/etc/fluent.conf"]
 ```
 
 | Field | Default | Meaning |
@@ -382,7 +390,7 @@ API server and etcd on your machine with envtest. No cluster is needed, and
 GitHub Actions runs the tests and the linter on every push.
 
 **What the tests do not cover.** No automated test runs the whole chain on a
-real cluster: the kubelet, NGINX, the images and the Helm chart together.
+real cluster: the kubelet, Fluentd, the images and the Helm chart together.
 The parts are tested one by one. The watcher tests copy what the kubelet
 does when it swaps the files, in a temporary directory. The webhook and
 controller tests use a real API server. Joining the parts is checked by hand

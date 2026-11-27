@@ -98,7 +98,8 @@ func TestSettingsHash(t *testing.T) {
 
 	// The same for an entry as the API server gives it back: with the
 	// defaults filled in, and with a check command. It is the entry of the
-	// sample policy, and the value is the one its Pods carry.
+	// sample policy of version 0.4.0, and the value is the one its Pods
+	// carry.
 	three := int32(3)
 	full := &reloadv1alpha1.ContainerSettings{
 		Name:         testutil.AppContainer,
@@ -112,6 +113,22 @@ func TestSettingsHash(t *testing.T) {
 	}
 	if got, want := settings.Hash(full), "8476bb7d6b"; got != want {
 		t.Fatalf("settings.Hash of an entry with reload settings = %q, want %q", got, want)
+	}
+
+	// The entry of the sample policy as it is now, for the Fluentd demo. The
+	// value is the one the Pods of the demo carry.
+	sample := &reloadv1alpha1.ContainerSettings{
+		Name:         "fluentd",
+		ConfigMapRef: reloadv1alpha1.ConfigMapRef{Name: "fluentd-config"},
+		MountPath:    "/fluentd/etc",
+		Reload: reloadv1alpha1.ReloadSpec{
+			Signal:          "SIGHUP",
+			DebounceSeconds: &three,
+			ValidateCommand: []string{"fluentd", "--dry-run", "-q", "-c", "/fluentd/etc/fluent.conf"},
+		},
+	}
+	if got, want := settings.Hash(sample), "74d9dbc6c6"; got != want {
+		t.Fatalf("settings.Hash of the entry of the sample policy = %q, want %q", got, want)
 	}
 
 	debounce := int32(9)

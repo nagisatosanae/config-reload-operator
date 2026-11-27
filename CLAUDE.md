@@ -30,7 +30,7 @@ reload는 부가 기능이다. 온전하게 동작해야 하지만, 이 기능 �
 | `api/v1alpha1/` | CRD 타입. 기본값과 검증은 kubebuilder 마커로 정의한다. |
 | `charts/config-reload-operator/` | Helm 차트. 공식 설치 경로다. |
 | `config/` | controller-gen이 만든 CRD와 RBAC, 샘플 정책. |
-| `demo/nginx/` | 데모 이미지(NGINX + watcher)와 매니페스트. |
+| `demo/fluentd/` | 데모 이미지(Fluentd + watcher)와 매니페스트. |
 | `docs/` | 추가 문서. 설계 이유는 [docs/design.md](docs/design.md), 이미지와 릴리스 방법은 [docs/images.md](docs/images.md). |
 | `notes/`, `reference/` | 개인 학습 노트와 작업용 참고 파일. git에 들어가지 않는다. |
 
@@ -38,7 +38,7 @@ reload는 부가 기능이다. 온전하게 동작해야 하지만, 이 기능 �
 
 **watcher**
 
-- **앱이 PID 1이다.** 이미지의 시작 명령은 `watcher-entrypoint.sh`다. `CONFIG_RELOAD_DIR`가 있으면 같은 폴더의 `watcher`를 백그라운드로 띄우고, `exec "$@"`로 앱이 된다. watcher는 앱의 자식이고, 시그널을 부모에게 보낸다.
+- **앱이 PID 1이다.** 이미지의 시작 명령은 `watcher-entrypoint.sh`다. `CONFIG_RELOAD_DIR`가 있으면 같은 폴더의 `watcher`를 백그라운드로 띄우고, `exec "$@"`로 앱이 된다. watcher는 앱의 자식이고, 시그널을 부모에게 보낸다. 이미지가 원래 `tini` 같은 init으로 시작하면 그 init이 PID 1이다. 데모의 Fluentd 이미지가 그렇다. watcher는 tini의 자식이고, tini가 시그널을 Fluentd에 넘긴다.
 - **watcher의 어떤 실패도 앱을 내리면 안 된다.** watcher 실행 파일이 없어도 스크립트는 앱을 띄운다. 감시가 멈추면 watcher가 스스로 다시 시도하고, panic도 잡는다. 스크립트에 앱 시작을 막을 수 있는 것을 넣지 않는다.
 - **`CONFIG_RELOAD_DIR`가 없으면** 스크립트는 watcher를 띄우지 않는다. 정책이 없어도 이미지가 그대로 동작해야 한다.
 - **watcher는 앱을 띄우지 않는다.** 인자 없이 실행하면 감시하고, `--healthcheck`는 watch 프로세스가 살아 있는지 알려 준다. 그 밖의 인자(0.1 방식의 `watcher -- 명령`)나 PID 1로 실행되면 시작 스크립트를 쓰라는 메시지를 내고 끝난다.
@@ -85,15 +85,15 @@ make lint-fix                         # 자동 수정까지
 make manifests                        # CRD와 RBAC 다시 생성, 차트의 crds/로 복사
 make generate                         # zz_generated.deepcopy.go 다시 생성
 
-./build.sh                            # watcher를 static linux 바이너리로 bin/watcher에 빌드
-docker build -f demo/nginx/Dockerfile -t demo-nginx:dev .
+docker build -f cmd/watcher/Dockerfile -t watcher:dev .
+docker build -f demo/fluentd/Dockerfile -t demo-fluentd:dev .
 make docker-build IMG=manager:dev     # manager 이미지
 ```
 
 - `api/v1alpha1/*_types.go`나 `+kubebuilder` 마커를 고치면 `make manifests generate`를 실행하고 생성된 파일을 같이 커밋 대상에 넣는다.
 - 생성 파일은 손으로 고치지 않는다: `zz_generated.deepcopy.go`, `config/crd/bases/`, `config/rbac/role.yaml`, `charts/config-reload-operator/crds/`.
 - controller의 RBAC 마커를 고치면 차트의 `templates/rbac.yaml`도 같은 규칙으로 맞춘다. 웹훅용 권한은 차트에만 있다.
-- watcher와 demo 이미지는 Docker 밖에서 빌드한 `bin/watcher`와 `cmd/watcher/watcher-entrypoint.sh`를 복사한다. 이미지를 만들기 전에 `./build.sh`를 먼저 실행한다. `.dockerignore`가 기본으로 모든 파일을 빼므로, 이미지에 넣을 파일은 거기에 다시 넣어 줘야 한다.
+- 이미지 셋 모두 Go 빌드를 Dockerfile의 첫 단계에서 한다. watcher 빌드는 `cmd/watcher/Dockerfile`과 `demo/fluentd/Dockerfile` 양쪽에 같은 내용으로 있다. 하나를 바꾸면 다른 쪽도 같이 바꾼다. `.dockerignore`가 기본으로 모든 파일을 빼므로, 이미지에 넣을 파일은 거기에 다시 넣어 줘야 한다.
 - 텍스트 파일은 LF로 저장한다(`.gitattributes`). 시작 스크립트가 CRLF면 container가 뜨지 않는다.
 - e2e 테스트는 없다. 전체 흐름은 README의 quick start로 직접 확인한다.
 - `kubebuilder create ...`는 이 저장소에서 끝까지 돌지 않는다. `cmd/main.go`와 `test/e2e/`를 찾는데 둘 다 없다. 새 조각은 저장소의 구조에 맞춰 손으로 쓴다. 손으로 쓰더라도 kubebuilder가 만드는 자리와 이름을 따른다: 웹훅은 `internal/webhook/<버전>/<kind>_webhook.go`, 타입은 `<Kind>Defaulter`와 `<Kind>Validator`, 등록 함수는 `Setup<Kind>WebhookWithManager`. 진입점만 다르다. 바이너리가 둘이라 `cmd/main.go`가 아니라 `cmd/manager/main.go`다. 웹훅 설정도 `+kubebuilder:webhook` 마커가 아니라 차트 템플릿에 직접 쓴다.
@@ -107,8 +107,8 @@ make docker-build IMG=manager:dev     # manager 이미지
 ## 브랜치와 릴리스
 
 - 기본 브랜치는 `main`, 평소 작업은 `develop`에서 한다.
-- GitHub Actions: push와 PR마다 `test.yml`, `lint.yml`이 돈다. `v*` 태그를 push하면 `images.yml`이 `watcher`, `demo-nginx`, `manager` 이미지를 ghcr.io에 올린다.
-- 릴리스할 때 버전을 맞춰야 하는 곳: `charts/config-reload-operator/Chart.yaml`(`version`, `appVersion`), `demo/nginx/k8s.yaml`의 이미지 태그, README와 `docs/images.md`와 `cmd/watcher/Dockerfile` 주석의 watcher 이미지 태그.
+- GitHub Actions: push와 PR마다 `test.yml`, `lint.yml`이 돈다. `v*` 태그를 push하면 `images.yml`이 `watcher`, `demo-fluentd`, `manager` 이미지를 ghcr.io에 올린다.
+- 릴리스할 때 버전을 맞춰야 하는 곳: `charts/config-reload-operator/Chart.yaml`(`version`, `appVersion`), `demo/fluentd/k8s.yaml`의 이미지 태그, README와 `docs/images.md`와 `cmd/watcher/Dockerfile` 주석의 watcher 이미지 태그.
 - operator와 watcher는 같은 버전끼리 쓴다. env 이름이 둘 사이의 약속이기 때문이다.
 
 ## 작업 규칙

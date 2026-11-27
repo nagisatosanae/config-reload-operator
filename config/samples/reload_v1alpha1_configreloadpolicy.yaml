@@ -3,15 +3,15 @@ kind: ConfigReloadPolicy
 metadata:
   labels:
     app.kubernetes.io/name: config-reload-operator
-  name: nginx-reload
+  name: fluentd-reload
   namespace: demo
 spec:
   workloadRef:
-    name: nginx-demo
+    name: fluentd-demo
   containers:
-    - name: nginx
+    - name: fluentd
       configMapRef:
-        name: nginx-config
-      mountPath: /etc/nginx/conf.d
+        name: fluentd-config
+      mountPath: /fluentd/etc
       reload:
-        validateCommand: ["nginx", "-t"]
+        validateCommand: ["fluentd", "--dry-run", "-q", "-c", "/fluentd/etc/fluent.conf"]

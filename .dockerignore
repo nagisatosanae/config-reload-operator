@@ -13,8 +13,5 @@
 !go.mod
 !go.sum
 
-# The demo image copies the prebuilt watcher binary
-!bin/watcher
-
 # The start script that goes into images next to the watcher
 !cmd/watcher/watcher-entrypoint.sh
