@@ -49,10 +49,12 @@ smaller. What is left is under [Limits](#limits).
 There are three parts.
 
 - The **watcher** is a small Go binary inside the app's image. A start
-  script starts it next to the app and then turns into the app. So the app
-  is PID 1 and the watcher is its child. The watcher watches the config
-  directory. When the content changes, it checks the new config and sends
-  the signal to the app.
+  script starts it and then turns into the command the image ran before.
+  So PID 1 is what it is without the watcher, usually the app, and the
+  watcher is its child. The watcher watches the config directory. When the
+  content changes, it checks the new config and sends the signal to its
+  parent. The Fluentd image of the demo starts with `tini`. There `tini`
+  is PID 1 and hands the signal on to Fluentd.
 - The **webhook** reads `ConfigReloadPolicy` objects. A policy names a
   Deployment and, for each container, a ConfigMap and the path to mount it
   at. When a Pod of that Deployment is created, the webhook adds the
@@ -103,7 +105,7 @@ in [docs/design.md](docs/design.md).
 | Compares the content of the files, not the file events. | No reload when nothing really changed. |
 | Waits for a quiet time, 3 seconds by default. | The six file events of one ConfigMap update become one reload. |
 | Can run a check command first, such as `fluentd --dry-run`. | A broken config is not loaded. The app keeps running with the old one. |
-| The app is PID 1 and the watcher runs next to it. | Stop signals reach the app directly, and the container exits with the app's exit code. A watcher that fails cannot stop the app. |
+| The image's own command is PID 1, and the watcher is its child. | Stop signals reach the app as they do without the watcher, and the container exits with the app's exit code. A watcher that fails cannot stop the app. |
 | Settings come from a policy, not from the image. | One image works for any path and any signal. |
 | The policy has a status. | A Deployment, a container or an annotation that is missing shows up as `Ready=False` with a reason, and you see how many Pods carry the settings. The status does not look inside a Pod: a watcher that stopped or a check that failed is only in the Pod's log. |
 | Only new Pods get the settings. | Your Deployment is never changed and a Pod that runs is never touched, so there are no surprise rollouts. |
