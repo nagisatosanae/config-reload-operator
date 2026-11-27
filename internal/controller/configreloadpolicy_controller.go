@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,13 +34,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
+	"github.com/nagisatosanae/config-reload-operator/internal/settings"
 )
 
 // ConfigReloadPolicyReconciler reports the state of a ConfigReloadPolicy.
 //
-// It writes nothing but the status of the policy. The settings are put on
-// new Pods by the webhook, see PodInjector. A Deployment and its Pods are
-// only read, and a Pod that runs is never touched.
+// It writes nothing but the status of the policy, and it takes the
+// finalizer of version 0.1 off a policy that still has it. The settings are
+// put on new Pods by the webhook, see PodDefaulter in internal/webhook/v1. A
+// Deployment and its Pods are only read, and a Pod that runs is never
+// touched.
 type ConfigReloadPolicyReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -135,7 +139,7 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	for i := range policy.Spec.Containers {
 		name := policy.Spec.Containers[i].Name
-		if containerIndex(&template.Spec, name) < 0 {
+		if settings.ContainerIndex(&template.Spec, name) < 0 {
 			msg := fmt.Sprintf("Deployment %q has no container named %q", dep.Name, name)
 			return r.report(ctx, &policy, counts{}, metav1.ConditionFalse, reasonContainerNotFound, msg)
 		}
@@ -143,9 +147,9 @@ func (r *ConfigReloadPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// 5. The Pod template must ask for the settings. Without the annotation
 	// the API server does not send the Pods to the webhook.
-	if !asksForSettings(template.Annotations) {
+	if !settings.AskedFor(template.Annotations) {
 		msg := fmt.Sprintf("the Pod template of Deployment %q does not have the annotation %s: \"true\"",
-			dep.Name, InjectAnnotation)
+			dep.Name, settings.InjectAnnotation)
 		return r.report(ctx, &policy, counts{}, metav1.ConditionFalse, reasonNotOptedIn, msg)
 	}
 
@@ -199,21 +203,21 @@ func (r *ConfigReloadPolicyReconciler) countPods(
 	// The mark of a Pod that carries the settings of the policy as it is
 	// now. Any other mark means other settings: the policy was changed
 	// after the Pod was made, or an earlier version marked the Pod.
-	want := markFor(policy)
+	want := settings.MarkFor(policy)
 
 	var n counts
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if !pod.DeletionTimestamp.IsZero() || !asksForSettings(pod.Annotations) {
+		if !pod.DeletionTimestamp.IsZero() || !settings.AskedFor(pod.Annotations) {
 			continue
 		}
 		// The selector can also match Pods that are not made by this
 		// Deployment.
-		if owner, err := deploymentOf(pod); err != nil || owner != dep.Name {
+		if owner, err := settings.DeploymentOf(pod); err != nil || owner != dep.Name {
 			continue
 		}
 		n.pods++
-		switch pod.Annotations[InjectedAnnotation] {
+		switch pod.Annotations[settings.InjectedAnnotation] {
 		case "":
 		case want:
 			n.current++
@@ -227,10 +231,10 @@ func (r *ConfigReloadPolicyReconciler) countPods(
 // policiesForPod returns the policies that count this Pod. The controller
 // uses it to look at a policy again when one of its Pods comes or goes.
 func (r *ConfigReloadPolicyReconciler) policiesForPod(ctx context.Context, pod client.Object) []reconcile.Request {
-	if !asksForSettings(pod.GetAnnotations()) {
+	if !settings.AskedFor(pod.GetAnnotations()) {
 		return nil
 	}
-	deployment, err := deploymentOf(pod)
+	deployment, err := settings.DeploymentOf(pod)
 	if err != nil {
 		return nil
 	}
@@ -247,16 +251,6 @@ func (r *ConfigReloadPolicyReconciler) policiesForPod(ctx context.Context, pod c
 		}
 	}
 	return requests
-}
-
-// containerIndex returns the position of the named container, or -1.
-func containerIndex(podSpec *corev1.PodSpec, name string) int {
-	for i := range podSpec.Containers {
-		if podSpec.Containers[i].Name == name {
-			return i
-		}
-	}
-	return -1
 }
 
 // report writes the Ready condition and the Pod counts, but only when

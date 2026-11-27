@@ -133,3 +133,10 @@ func TestWatchKeepsWorkingAfterAnUpdate(t *testing.T) {
 		t.Fatalf("reloads after two separate updates = %d, want 2", got)
 	}
 }
+
+// watch calls reload when the content of the files in dir has changed and
+// check says the new content is good. It returns when it cannot watch.
+func watch(dir string, quiet, grace time.Duration, check func() error, reload func()) {
+	keep := &memory{started: time.Now(), running: hashDir(dir)}
+	watchOnce(keep, dir, quiet, grace, check, reload)
+}

@@ -1,7 +1,8 @@
 # What the controller may do in the whole cluster: read Pods and Deployments,
-# and write the status of the policies. Keep the rules the same as
-# config/rbac/role.yaml, which controller-gen writes from the markers in the
-# controller code.
+# and write the status of the policies. The update of a policy itself is only
+# there to take off the finalizer that version 0.1 put on. Keep the rules the
+# same as config/rbac/role.yaml, which controller-gen writes from the markers
+# in the controller code.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

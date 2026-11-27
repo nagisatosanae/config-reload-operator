@@ -14,47 +14,33 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package v1
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"hash/fnv"
 	"path"
 	"slices"
 	"strconv"
-	"strings"
 
-	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
+	"github.com/nagisatosanae/config-reload-operator/internal/settings"
 )
 
 const (
-	// InjectAnnotation asks for the watcher settings. It goes on the Pod
-	// template of a Deployment, so every Pod of it carries it. Only a Pod
-	// that has it with the value "true" is looked at.
-	InjectAnnotation = "reload.nagisatosanae.github.io/inject"
-
-	// InjectedAnnotation is put on a Pod by the webhook. It names the
-	// containers that got settings, each as "container=hash", with commas
-	// in between. The hash is made from what the policy says about that
-	// container.
-	InjectedAnnotation = "reload.nagisatosanae.github.io/injected"
-
-	// injectPath is the URL path the webhook is served on.
+	// PodWebhookPath is the URL path the webhook is served on.
 	//
-	// The chart names the annotation and the path too, in
-	// templates/webhook.yaml. Change one side and you must change the other.
-	injectPath = "/mutate--v1-pod"
+	// The chart names the path too, in templates/webhook.yaml. Change one
+	// side and you must change the other.
+	PodWebhookPath = "/mutate--v1-pod"
 
 	// volumePrefix starts the name of every volume the webhook adds.
 	volumePrefix = "config-reload-"
@@ -78,7 +64,7 @@ const (
 // already sets one of them cannot get the settings.
 var ownedEnv = []string{envWatchDir, envSignal, envDebounce, envValidate}
 
-// PodInjector is a mutating admission webhook for Pods.
+// PodDefaulter is a mutating admission webhook for Pods.
 //
 // When a Pod of a Deployment is created and carries the annotation, the
 // webhook reads the policy that points at that Deployment and puts its
@@ -89,7 +75,7 @@ var ownedEnv = []string{envWatchDir, envSignal, envDebounce, envValidate}
 //
 // It reads nothing but the policies. What the Pod belongs to is taken from
 // the Pod itself.
-type PodInjector struct {
+type PodDefaulter struct {
 	// Client reads the policies. The manager gives its cached client.
 	Client client.Reader
 
@@ -101,15 +87,15 @@ type PodInjector struct {
 
 // Default puts the watcher settings on pod. The API server calls it before
 // the Pod is stored.
-func (p *PodInjector) Default(ctx context.Context, pod *corev1.Pod) error {
+func (d *PodDefaulter) Default(ctx context.Context, pod *corev1.Pod) error {
 	// The API server already filters on the annotation. Check again here, so
 	// the rule does not depend on how the webhook was registered.
-	if !asksForSettings(pod.Annotations) {
+	if !settings.AskedFor(pod.Annotations) {
 		return nil
 	}
 	// The settings are already there: this Pod went through the webhook
 	// before, in this request or as a copy of another Pod.
-	if _, done := pod.Annotations[InjectedAnnotation]; done {
+	if _, done := pod.Annotations[settings.InjectedAnnotation]; done {
 		return nil
 	}
 
@@ -120,41 +106,36 @@ func (p *PodInjector) Default(ctx context.Context, pod *corev1.Pod) error {
 		namespace = req.Namespace
 	}
 
-	injected, err := p.inject(ctx, namespace, pod)
+	injected, err := d.inject(ctx, namespace, pod)
 	if err != nil {
-		return p.problem(ctx, namespace, pod, err)
+		return d.problem(ctx, namespace, pod, err)
 	}
 	*pod = *injected
 	return nil
 }
 
-// asksForSettings tells if these annotations ask for the watcher settings.
-func asksForSettings(annotations map[string]string) bool {
-	return annotations[InjectAnnotation] == "true"
-}
-
 // problem decides what becomes of a Pod that cannot get its settings.
-func (p *PodInjector) problem(ctx context.Context, namespace string, pod *corev1.Pod, reason error) error {
+func (d *PodDefaulter) problem(ctx context.Context, namespace string, pod *corev1.Pod, reason error) error {
 	name := pod.Name
 	if name == "" {
 		name = pod.GenerateName + "*"
 	}
-	if p.FailurePolicy == FailurePolicyIgnore {
+	if d.FailurePolicy == FailurePolicyIgnore {
 		logf.FromContext(ctx).Info("the Pod starts without the watcher settings",
 			"namespace", namespace, "pod", name, "reason", reason.Error())
 		return nil
 	}
-	return fmt.Errorf("pod %s asks for the watcher settings with the annotation %s, but %w", name, InjectAnnotation, reason)
+	return fmt.Errorf("pod %s asks for the watcher settings with the annotation %s, but %w", name, settings.InjectAnnotation, reason)
 }
 
 // inject returns a copy of pod with the settings of the policy that points
 // at its Deployment.
-func (p *PodInjector) inject(ctx context.Context, namespace string, pod *corev1.Pod) (*corev1.Pod, error) {
-	deployment, err := deploymentOf(pod)
+func (d *PodDefaulter) inject(ctx context.Context, namespace string, pod *corev1.Pod) (*corev1.Pod, error) {
+	deployment, err := settings.DeploymentOf(pod)
 	if err != nil {
 		return nil, err
 	}
-	return p.injectFor(ctx, namespace, deployment, pod)
+	return d.injectFor(ctx, namespace, deployment, pod)
 }
 
 // injectFor returns a copy of pod with the settings of the policy that
@@ -164,8 +145,8 @@ func (p *PodInjector) inject(ctx context.Context, namespace string, pod *corev1.
 // The check of a Deployment calls it too, with a Pod made from the Pod
 // template. So what is said when a Deployment is applied and what happens
 // when its Pods are made cannot differ.
-func (p *PodInjector) injectFor(ctx context.Context, namespace, deployment string, pod *corev1.Pod) (*corev1.Pod, error) {
-	policies, err := policiesFor(ctx, p.Client, namespace, deployment)
+func (d *PodDefaulter) injectFor(ctx context.Context, namespace, deployment string, pod *corev1.Pod) (*corev1.Pod, error) {
+	policies, err := settings.PoliciesFor(ctx, d.Client, namespace, deployment)
 	if err != nil {
 		return nil, err
 	}
@@ -194,76 +175,13 @@ func (p *PodInjector) injectFor(ctx context.Context, namespace, deployment strin
 	if out.Annotations == nil {
 		out.Annotations = map[string]string{}
 	}
-	out.Annotations[InjectedAnnotation] = markFor(policy)
+	out.Annotations[settings.InjectedAnnotation] = settings.MarkFor(policy)
 	return out, nil
-}
-
-// policiesFor returns the policies of the namespace that point at the
-// named Deployment. A policy on its way out is left out.
-func policiesFor(ctx context.Context, c client.Reader, namespace, deployment string) ([]reloadv1alpha1.ConfigReloadPolicy, error) {
-	var all reloadv1alpha1.ConfigReloadPolicyList
-	if err := c.List(ctx, &all, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("the policies could not be read: %w", err)
-	}
-	var found []reloadv1alpha1.ConfigReloadPolicy
-	for i := range all.Items {
-		if all.Items[i].Spec.WorkloadRef.Name == deployment && all.Items[i].DeletionTimestamp.IsZero() {
-			found = append(found, all.Items[i])
-		}
-	}
-	return found, nil
-}
-
-// deploymentOf returns the name of the Deployment a new Pod belongs to.
-//
-// A Deployment makes its Pods through a ReplicaSet named
-// "<deployment>-<hash>", and gives the Pods the same hash in a label. So the
-// name can be read from the Pod, without a call to the API server.
-func deploymentOf(pod metav1.Object) (string, error) {
-	owner := metav1.GetControllerOf(pod)
-	hash := pod.GetLabels()[appsv1.DefaultDeploymentUniqueLabelKey]
-	if owner == nil || owner.Kind != "ReplicaSet" || hash == "" || !strings.HasSuffix(owner.Name, "-"+hash) {
-		return "", errors.New("it does not belong to a Deployment, and only Pods of a Deployment can get them")
-	}
-	return strings.TrimSuffix(owner.Name, "-"+hash), nil
-}
-
-// settingsHash returns a short hash of what a policy says about one
-// container. Everything the webhook puts on that container comes from
-// there, so the same entry gives a Pod the same settings, whatever the
-// policy is called.
-//
-// The content goes in as JSON. The hash is FNV-1a with 32 bits, written in
-// letters and digits that cannot spell a word. Kubernetes uses the same
-// function and the same letters for the pod-template-hash of a ReplicaSet.
-func settingsHash(c *reloadv1alpha1.ContainerSettings) string {
-	// A struct of strings, numbers and lists always turns into JSON, so the
-	// error is ignored.
-	data, _ := json.Marshal(c)
-	h := fnv.New32a()
-	_, _ = h.Write(data)
-	return rand.SafeEncodeString(fmt.Sprint(h.Sum32()))
-}
-
-// markFor returns the mark of a Pod that carries the settings of the policy
-// as it is now: every container as "name=hash", in the order of the names.
-//
-// The webhook writes it on a new Pod, and the controller compares it with
-// what a Pod carries. That is a comparison of content: a policy that is
-// deleted and made again with the same containers gives the same mark.
-func markFor(policy *reloadv1alpha1.ConfigReloadPolicy) string {
-	entries := make([]string, 0, len(policy.Spec.Containers))
-	for i := range policy.Spec.Containers {
-		c := &policy.Spec.Containers[i]
-		entries = append(entries, c.Name+"="+settingsHash(c))
-	}
-	slices.Sort(entries)
-	return strings.Join(entries, ",")
 }
 
 // injectContainer puts the settings of one container on the Pod.
 func injectContainer(pod *corev1.Pod, c *reloadv1alpha1.ContainerSettings) error {
-	idx := containerIndex(&pod.Spec, c.Name)
+	idx := settings.ContainerIndex(&pod.Spec, c.Name)
 	if idx < 0 {
 		return fmt.Errorf("the Pod has no container named %q", c.Name)
 	}
@@ -367,10 +285,12 @@ func watcherEnv(c *reloadv1alpha1.ContainerSettings) []corev1.EnvVar {
 	return env
 }
 
-// SetupWebhookWithManager serves the webhook on the manager's webhook server.
-func (p *PodInjector) SetupWebhookWithManager(mgr ctrl.Manager) error {
+// SetupPodWebhookWithManager serves the Pod webhook on the manager's webhook
+// server. failurePolicy says what happens to a Pod that cannot get its
+// settings: FailurePolicyFail or FailurePolicyIgnore.
+func SetupPodWebhookWithManager(mgr ctrl.Manager, failurePolicy string) error {
 	return ctrl.NewWebhookManagedBy(mgr, &corev1.Pod{}).
-		WithDefaulter(p).
-		WithDefaulterCustomPath(injectPath).
+		WithDefaulter(&PodDefaulter{Client: mgr.GetClient(), FailurePolicy: failurePolicy}).
+		WithDefaulterCustomPath(PodWebhookPath).
 		Complete()
 }

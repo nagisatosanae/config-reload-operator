@@ -31,79 +31,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
+	"github.com/nagisatosanae/config-reload-operator/internal/settings"
+	"github.com/nagisatosanae/config-reload-operator/internal/testutil"
 )
 
 // These tests run against the envtest API server: a real kube-apiserver and
 // etcd, but no kubelet and no other controllers. So the API server fills in
 // defaults and rejects bad values for real, and Reconcile reads a real
 // Deployment, but no Pod is ever started.
-
-const (
-	testNamespace   = "default"
-	appContainer    = "nginx"
-	helperContainer = "helper"
-	helperMountPath = "/etc/helper"
-	// otherContainer is a name no container has.
-	otherContainer = "sidecar"
-	mountPath      = "/etc/nginx/conf.d"
-	tz             = "Asia/Seoul"
-	sigUSR1        = "SIGUSR1"
-	// holdFinalizer keeps an object there after it was deleted.
-	holdFinalizer = "example.com/hold"
-	// webhookService is the name the test webhooks are registered under.
-	// envtest turns it into the address of the test server.
-	webhookService = "webhook"
-)
-
-// newDeployment returns a Deployment like the demo: a helper container
-// first, then the app container "nginx". Its Pod template asks for the
-// watcher settings with the annotation.
-func newDeployment(name string) *appsv1.Deployment {
-	labels := map[string]string{"app": name}
-	replicas := int32(0)
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      labels,
-					Annotations: map[string]string{InjectAnnotation: "true"},
-				},
-				Spec: corev1.PodSpec{Containers: []corev1.Container{
-					{Name: helperContainer, Image: "busybox"},
-					{Name: appContainer, Image: "nginx:stable-alpine"},
-				}},
-			},
-		},
-	}
-}
-
-// newPolicy returns a policy for the Deployment made by newDeployment. It
-// names one container, the app.
-func newPolicy(name, deployment string) *reloadv1alpha1.ConfigReloadPolicy {
-	return &reloadv1alpha1.ConfigReloadPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
-		Spec: reloadv1alpha1.ConfigReloadPolicySpec{
-			WorkloadRef: reloadv1alpha1.WorkloadRef{Name: deployment},
-			Containers: []reloadv1alpha1.ContainerSettings{{
-				Name:         appContainer,
-				ConfigMapRef: reloadv1alpha1.ConfigMapRef{Name: deployment + "-config"},
-				MountPath:    mountPath,
-			}},
-		},
-	}
-}
-
-// helperSettings returns settings for the other container of newDeployment.
-func helperSettings() reloadv1alpha1.ContainerSettings {
-	return reloadv1alpha1.ContainerSettings{
-		Name:         helperContainer,
-		ConfigMapRef: reloadv1alpha1.ConfigMapRef{Name: "helper-config"},
-		MountPath:    helperMountPath,
-	}
-}
 
 // create makes the object and removes it again when the spec is over.
 func create(obj client.Object) {
@@ -116,14 +51,14 @@ func create(obj client.Object) {
 
 func runReconcile(policy string) (ctrl.Result, error) {
 	r := &ConfigReloadPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-	key := types.NamespacedName{Name: policy, Namespace: testNamespace}
+	key := types.NamespacedName{Name: policy, Namespace: testutil.Namespace}
 	return r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 }
 
 func getDeployment(name string) *appsv1.Deployment {
 	GinkgoHelper()
 	dep := &appsv1.Deployment{}
-	key := types.NamespacedName{Name: name, Namespace: testNamespace}
+	key := types.NamespacedName{Name: name, Namespace: testutil.Namespace}
 	Expect(k8sClient.Get(ctx, key, dep)).To(Succeed())
 	return dep
 }
@@ -131,19 +66,27 @@ func getDeployment(name string) *appsv1.Deployment {
 func getPolicy(name string) *reloadv1alpha1.ConfigReloadPolicy {
 	GinkgoHelper()
 	pol := &reloadv1alpha1.ConfigReloadPolicy{}
-	key := types.NamespacedName{Name: name, Namespace: testNamespace}
+	key := types.NamespacedName{Name: name, Namespace: testutil.Namespace}
 	Expect(k8sClient.Get(ctx, key, pol)).To(Succeed())
 	return pol
 }
 
 func policyExists(name string) bool {
 	GinkgoHelper()
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: testNamespace}, &reloadv1alpha1.ConfigReloadPolicy{})
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: testutil.Namespace}, &reloadv1alpha1.ConfigReloadPolicy{})
 	if err == nil {
 		return true
 	}
 	Expect(err).To(MatchError(apierrors.IsNotFound, "a NotFound error"))
 	return false
+}
+
+// stored reads the Pod back from the API server.
+func stored(pod *corev1.Pod) *corev1.Pod {
+	GinkgoHelper()
+	got := &corev1.Pod{}
+	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), got)).To(Succeed())
+	return got
 }
 
 // readyCondition returns the Ready condition of the policy.
@@ -155,15 +98,13 @@ func readyCondition(policy string) *metav1.Condition {
 }
 
 var _ = Describe("ConfigReloadPolicy controller", func() {
-	// These specs are about what the controller reports. Some of them need a
-	// Deployment that the Deployment check would turn down, so here the check
-	// only warns.
-	BeforeEach(func() {
-		testInjector.use(FailurePolicyIgnore)
-	})
+	// These specs are about what the controller reports. The Pod webhook runs
+	// in this suite too, so a Pod gets its settings and its mark the way it
+	// does in a cluster. Its failure policy is Ignore here, because some specs
+	// need a Pod that starts before its policy is there.
 
 	It("gets its defaults from the API server", func() {
-		create(newPolicy("defaults-reload", "defaults"))
+		create(testutil.NewPolicy("defaults-reload", "defaults"))
 		pol := getPolicy("defaults-reload")
 		Expect(pol.Spec.WorkloadRef.Kind).To(Equal("Deployment"))
 		Expect(pol.Spec.Containers[0].Reload.Signal).To(Equal("SIGHUP"))
@@ -172,8 +113,8 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("is Ready before there are Pods, when the Deployment asks for the settings", func() {
-		create(newDeployment("web"))
-		create(newPolicy("web-reload", "web"))
+		create(testutil.NewDeployment("web"))
+		create(testutil.NewPolicy("web-reload", "web"))
 
 		result, err := runReconcile("web-reload")
 		Expect(err).NotTo(HaveOccurred())
@@ -187,10 +128,10 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("counts the Pods that carry the settings", func() {
-		create(newDeployment("full"))
-		create(newPolicy("full-reload", "full"))
-		create(newPod("full"))
-		create(newPod("full"))
+		create(testutil.NewDeployment("full"))
+		create(testutil.NewPolicy("full-reload", "full"))
+		create(testutil.NewPod("full"))
+		create(testutil.NewPod("full"))
 
 		_, err := runReconcile("full-reload")
 		Expect(err).NotTo(HaveOccurred())
@@ -204,12 +145,12 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("reports a Pod that runs without the settings", func() {
-		create(newDeployment("partial"))
+		create(testutil.NewDeployment("partial"))
 		// This Pod starts before the policy is there. The failure policy is
 		// Ignore in these specs, so it starts as it was written.
-		create(newPod("partial"))
-		create(newPolicy("partial-reload", "partial"))
-		create(newPod("partial"))
+		create(testutil.NewPod("partial"))
+		create(testutil.NewPolicy("partial-reload", "partial"))
+		create(testutil.NewPod("partial"))
 
 		result, err := runReconcile("partial-reload")
 		Expect(err).NotTo(HaveOccurred())
@@ -225,12 +166,12 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("reports Pods that carry the settings from before the policy was changed", func() {
-		create(newDeployment("aged"))
-		create(newPolicy("aged-reload", "aged"))
-		create(newPod("aged"))
+		create(testutil.NewDeployment("aged"))
+		create(testutil.NewPolicy("aged-reload", "aged"))
+		create(testutil.NewPod("aged"))
 
 		pol := getPolicy("aged-reload")
-		pol.Spec.Containers[0].Reload.Signal = sigUSR1
+		pol.Spec.Containers[0].Reload.Signal = testutil.SigUSR1
 		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
 		_, err := runReconcile("aged-reload")
 		Expect(err).NotTo(HaveOccurred())
@@ -243,13 +184,13 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		By("the zero is stored, so kubectl shows 0 and not an empty column")
 		raw := &unstructured.Unstructured{}
 		raw.SetGroupVersionKind(reloadv1alpha1.SchemeGroupVersion.WithKind("ConfigReloadPolicy"))
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "aged-reload", Namespace: testNamespace}, raw)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "aged-reload", Namespace: testutil.Namespace}, raw)).To(Succeed())
 		_, found, err := unstructured.NestedInt64(raw.Object, "status", "injectedPods")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue(), "status.injectedPods is not in the stored object")
 
 		By("a new Pod gets the new settings, the old one is still reported")
-		create(newPod("aged"))
+		create(testutil.NewPod("aged"))
 		_, err = runReconcile("aged-reload")
 		Expect(err).NotTo(HaveOccurred())
 		status = getPolicy("aged-reload").Status
@@ -259,14 +200,14 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("finds its Pods current when it is deleted and made again with the same settings", func() {
-		create(newDeployment("again"))
-		create(newPolicy("again-reload", "again"))
-		create(newPod("again"))
+		create(testutil.NewDeployment("again"))
+		create(testutil.NewPolicy("again-reload", "again"))
+		create(testutil.NewPod("again"))
 		first := getPolicy("again-reload")
 
 		Expect(k8sClient.Delete(ctx, first)).To(Succeed())
 		Expect(policyExists("again-reload")).To(BeFalse())
-		create(newPolicy("again-reload", "again"))
+		create(testutil.NewPolicy("again-reload", "again"))
 		Expect(getPolicy("again-reload").UID).NotTo(Equal(first.UID), "it is a new object")
 
 		_, err := runReconcile("again-reload")
@@ -279,9 +220,9 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("reports Pods that carry the settings of an earlier policy with the same name", func() {
-		create(newDeployment("reborn"))
-		create(newPolicy("reborn-reload", "reborn"))
-		create(newPod("reborn"))
+		create(testutil.NewDeployment("reborn"))
+		create(testutil.NewPolicy("reborn-reload", "reborn"))
+		create(testutil.NewPod("reborn"))
 		first := getPolicy("reborn-reload")
 
 		// The policy is deleted and made again with another signal. The new
@@ -289,8 +230,8 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		// made under. What tells them apart is the hash of the settings.
 		Expect(k8sClient.Delete(ctx, first)).To(Succeed())
 		Expect(policyExists("reborn-reload")).To(BeFalse())
-		again := newPolicy("reborn-reload", "reborn")
-		again.Spec.Containers[0].Reload.Signal = sigUSR1
+		again := testutil.NewPolicy("reborn-reload", "reborn")
+		again.Spec.Containers[0].Reload.Signal = testutil.SigUSR1
 		create(again)
 		second := getPolicy("reborn-reload")
 		Expect(second.Generation).To(Equal(first.Generation))
@@ -305,7 +246,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(readyCondition("reborn-reload").Reason).To(Equal(reasonOutdated))
 
 		By("a new Pod gets the settings of the new policy and is counted")
-		create(newPod("reborn"))
+		create(testutil.NewPod("reborn"))
 		_, err = runReconcile("reborn-reload")
 		Expect(err).NotTo(HaveOccurred())
 		status = getPolicy("reborn-reload").Status
@@ -314,12 +255,12 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("reports a Pod that got its settings before a container was added to the policy", func() {
-		create(newDeployment("grown"))
-		create(newPolicy("grown-reload", "grown"))
-		create(newPod("grown"))
+		create(testutil.NewDeployment("grown"))
+		create(testutil.NewPolicy("grown-reload", "grown"))
+		create(testutil.NewPod("grown"))
 
 		pol := getPolicy("grown-reload")
-		pol.Spec.Containers = append(pol.Spec.Containers, helperSettings())
+		pol.Spec.Containers = append(pol.Spec.Containers, testutil.HelperSettings())
 		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
 		_, err := runReconcile("grown-reload")
 		Expect(err).NotTo(HaveOccurred())
@@ -330,15 +271,15 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		Expect(readyCondition("grown-reload").Reason).To(Equal(reasonOutdated))
 
 		By("a new Pod gets the settings of both containers and is counted")
-		create(newPod("grown"))
+		create(testutil.NewPod("grown"))
 		_, err = runReconcile("grown-reload")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(getPolicy("grown-reload").Status.InjectedPods).To(BeEquivalentTo(1))
 	})
 
 	It("reports a Pod that an earlier version marked as outdated", func() {
-		create(newDeployment("marked"))
-		create(newPolicy("marked-reload", "marked"))
+		create(testutil.NewDeployment("marked"))
+		create(testutil.NewPolicy("marked-reload", "marked"))
 		pol := getPolicy("marked-reload")
 		// Versions 0.2.0 and 0.2.1 wrote the name and the generation of the
 		// policy, and 0.2.1 its UID too. A policy of that time has to be
@@ -346,8 +287,8 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 		// the settings of now. The webhook leaves a Pod alone that has a
 		// mark.
 		for _, mark := range []string{"marked-reload@1", "marked-reload@1@" + string(pol.UID)} {
-			pod := newPod("marked")
-			pod.Annotations[InjectedAnnotation] = mark
+			pod := testutil.NewPod("marked")
+			pod.Annotations[settings.InjectedAnnotation] = mark
 			create(pod)
 		}
 
@@ -360,23 +301,23 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("counts only Pods of its own Deployment that ask for the settings and are not on their way out", func() {
-		create(newDeployment("picky"))
-		create(newPolicy("picky-reload", "picky"))
-		create(newPod("picky"))
+		create(testutil.NewDeployment("picky"))
+		create(testutil.NewPolicy("picky-reload", "picky"))
+		create(testutil.NewPod("picky"))
 
 		By("a Pod with the same labels that another Deployment made")
-		stranger := newPod("picky")
-		stranger.OwnerReferences[0].Name = "elsewhere-" + podHash
+		stranger := testutil.NewPod("picky")
+		stranger.OwnerReferences[0].Name = "elsewhere-" + testutil.PodHash
 		create(stranger)
 
 		By("a Pod that does not ask for the settings")
-		plain := newPod("picky")
+		plain := testutil.NewPod("picky")
 		plain.Annotations = nil
 		create(plain)
 
 		By("a Pod that is being deleted")
-		leaving := newPod("picky")
-		leaving.Finalizers = []string{holdFinalizer}
+		leaving := testutil.NewPod("picky")
+		leaving.Finalizers = []string{testutil.HoldFinalizer}
 		create(leaving)
 		Expect(k8sClient.Delete(ctx, leaving)).To(Succeed())
 		DeferCleanup(func() {
@@ -394,10 +335,10 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("never writes the Deployment or a Pod, and writes the status only when it changes", func() {
-		create(newDeployment("idle"))
+		create(testutil.NewDeployment("idle"))
 		depVersion := getDeployment("idle").ResourceVersion
-		create(newPolicy("idle-reload", "idle"))
-		pod := newPod("idle")
+		create(testutil.NewPolicy("idle-reload", "idle"))
+		pod := testutil.NewPod("idle")
 		create(pod)
 		podVersion := stored(pod).ResourceVersion
 		_, err := runReconcile("idle-reload")
@@ -414,26 +355,26 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("knows which policy to look at again when a Pod comes or goes", func() {
-		create(newPolicy("wake-reload", "wake"))
-		create(newPolicy("other-reload", "other"))
+		create(testutil.NewPolicy("wake-reload", "wake"))
+		create(testutil.NewPolicy("other-reload", "other"))
 		r := &ConfigReloadPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
-		requests := r.policiesForPod(ctx, newPod("wake"))
+		requests := r.policiesForPod(ctx, testutil.NewPod("wake"))
 		names := make([]string, 0, len(requests))
 		for _, request := range requests {
 			names = append(names, request.Name)
 		}
 		Expect(names).To(ConsistOf("wake-reload"))
 
-		plain := newPod("wake")
+		plain := testutil.NewPod("wake")
 		plain.Annotations = nil
 		Expect(r.policiesForPod(ctx, plain)).To(BeEmpty(), "a Pod that does not ask wakes nobody up")
 	})
 
 	DescribeTable("reports what is wrong in the Ready condition and looks again later",
 		func(name string, change func(dep *appsv1.Deployment, pol *reloadv1alpha1.ConfigReloadPolicy), reason string) {
-			dep := newDeployment(name)
-			pol := newPolicy(name+"-reload", name)
+			dep := testutil.NewDeployment(name)
+			pol := testutil.NewPolicy(name+"-reload", name)
 			change(dep, pol)
 			create(dep)
 			create(pol)
@@ -454,12 +395,12 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 			}, reasonWorkloadNotFound),
 		Entry("the container is not there", "nocontainer",
 			func(_ *appsv1.Deployment, pol *reloadv1alpha1.ConfigReloadPolicy) {
-				pol.Spec.Containers[0].Name = otherContainer
+				pol.Spec.Containers[0].Name = testutil.OtherContainer
 			}, reasonContainerNotFound),
 		Entry("one of two containers is not there", "halfthere",
 			func(_ *appsv1.Deployment, pol *reloadv1alpha1.ConfigReloadPolicy) {
-				missing := helperSettings()
-				missing.Name = otherContainer
+				missing := testutil.HelperSettings()
+				missing.Name = testutil.OtherContainer
 				pol.Spec.Containers = append(pol.Spec.Containers, missing)
 			}, reasonContainerNotFound),
 		Entry("the Pod template does not ask for the settings", "plain",
@@ -474,12 +415,12 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	)
 
 	It("becomes Ready once the Deployment shows up", func() {
-		create(newPolicy("late-reload", "late"))
+		create(testutil.NewPolicy("late-reload", "late"))
 		_, err := runReconcile("late-reload")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(readyCondition("late-reload").Reason).To(Equal(reasonWorkloadNotFound))
 
-		create(newDeployment("late"))
+		create(testutil.NewDeployment("late"))
 		_, err = runReconcile("late-reload")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(readyCondition("late-reload").Status).To(Equal(metav1.ConditionTrue))
@@ -487,7 +428,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 
 	DescribeTable("is rejected by the API server when a value is bad",
 		func(change func(pol *reloadv1alpha1.ConfigReloadPolicy)) {
-			pol := newPolicy("invalid-reload", "invalid")
+			pol := testutil.NewPolicy("invalid-reload", "invalid")
 			change(pol)
 			err := k8sClient.Create(ctx, pol)
 			Expect(err).To(MatchError(apierrors.IsInvalid, "an Invalid error"))
@@ -512,14 +453,14 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 			pol.Spec.Containers[0].MountPath = "etc/nginx/conf.d"
 		}),
 		Entry("a mount path with a slash at the end", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
-			pol.Spec.Containers[0].MountPath = mountPath + "/"
+			pol.Spec.Containers[0].MountPath = testutil.MountPath + "/"
 		}),
 		Entry("no container", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
 			pol.Spec.Containers = nil
 		}),
 		Entry("the same container twice", func(pol *reloadv1alpha1.ConfigReloadPolicy) {
-			again := helperSettings()
-			again.Name = appContainer
+			again := testutil.HelperSettings()
+			again.Name = testutil.AppContainer
 			pol.Spec.Containers = append(pol.Spec.Containers, again)
 		}),
 	)
@@ -527,8 +468,8 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	It("does not let the Deployment of a policy change", func() {
 		const name = "fixed"
 		policy := name + "-reload"
-		create(newDeployment(name))
-		create(newPolicy(policy, name))
+		create(testutil.NewDeployment(name))
+		create(testutil.NewPolicy(policy, name))
 
 		pol := getPolicy(policy)
 		pol.Spec.WorkloadRef.Name = "elsewhere"
@@ -543,19 +484,19 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	It("lets the containers of a policy change", func() {
 		const name = "free"
 		policy := name + "-reload"
-		create(newDeployment(name))
-		create(newPolicy(policy, name))
+		create(testutil.NewDeployment(name))
+		create(testutil.NewPolicy(policy, name))
 
 		By("other settings for a container")
 		pol := getPolicy(policy)
 		pol.Spec.Containers[0].ConfigMapRef.Name = name + "-settings"
 		pol.Spec.Containers[0].MountPath = "/etc/nginx/templates"
-		pol.Spec.Containers[0].Reload.Signal = sigUSR1
+		pol.Spec.Containers[0].Reload.Signal = testutil.SigUSR1
 		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
 
 		By("one more container")
 		pol = getPolicy(policy)
-		pol.Spec.Containers = append(pol.Spec.Containers, helperSettings())
+		pol.Spec.Containers = append(pol.Spec.Containers, testutil.HelperSettings())
 		Expect(k8sClient.Update(ctx, pol)).To(Succeed())
 		Expect(getPolicy(policy).Spec.Containers[1].Reload.Signal).To(Equal("SIGHUP"), "the new entry gets the defaults")
 
@@ -566,8 +507,8 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("takes the finalizer of version 0.1 off a policy", func() {
-		create(newDeployment("old"))
-		pol := newPolicy("old-reload", "old")
+		create(testutil.NewDeployment("old"))
+		pol := testutil.NewPolicy("old-reload", "old")
 		pol.Finalizers = []string{oldFinalizer}
 		create(pol)
 
@@ -578,7 +519,7 @@ var _ = Describe("ConfigReloadPolicy controller", func() {
 	})
 
 	It("lets a policy go that was deleted while it still had that finalizer", func() {
-		pol := newPolicy("stuck-reload", "stuck")
+		pol := testutil.NewPolicy("stuck-reload", "stuck")
 		pol.Finalizers = []string{oldFinalizer}
 		create(pol)
 		Expect(k8sClient.Delete(ctx, pol)).To(Succeed())

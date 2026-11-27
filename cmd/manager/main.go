@@ -37,6 +37,8 @@ import (
 
 	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
 	"github.com/nagisatosanae/config-reload-operator/internal/controller"
+	webhookv1 "github.com/nagisatosanae/config-reload-operator/internal/webhook/v1"
+	webhookv1alpha1 "github.com/nagisatosanae/config-reload-operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -81,7 +83,7 @@ func main() {
 	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
 	flag.IntVar(&webhookPort, "webhook-port", 9443, "Port the webhook server listens on. "+
 		"Defaults to 9443. Set -1 to disable the webhook server.")
-	flag.StringVar(&webhookFailurePolicy, "webhook-failure-policy", controller.FailurePolicyFail,
+	flag.StringVar(&webhookFailurePolicy, "webhook-failure-policy", webhookv1.FailurePolicyFail,
 		"What happens to a Pod that asks for the watcher settings but cannot get them. "+
 			"Fail rejects the Pod. Ignore lets it start as it was written. "+
 			"Give it the same value as failurePolicy in the webhook registration.")
@@ -212,27 +214,23 @@ func main() {
 	// part that puts the watcher settings on new Pods. Without it the manager
 	// only reports the state of the policies.
 	if len(webhookCertPath) > 0 {
-		if webhookFailurePolicy != controller.FailurePolicyFail && webhookFailurePolicy != controller.FailurePolicyIgnore {
+		if webhookFailurePolicy != webhookv1.FailurePolicyFail && webhookFailurePolicy != webhookv1.FailurePolicyIgnore {
 			setupLog.Error(nil, "webhook-failure-policy must be Fail or Ignore", "value", webhookFailurePolicy)
 			os.Exit(1)
 		}
-		injector := &controller.PodInjector{
-			Client:        mgr.GetClient(),
-			FailurePolicy: webhookFailurePolicy,
-		}
-		if err := injector.SetupWebhookWithManager(mgr); err != nil {
+		if err := webhookv1.SetupPodWebhookWithManager(mgr, webhookFailurePolicy); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "pod")
 			os.Exit(1)
 		}
 		// The same checks, run when a Deployment is applied, so a problem is
 		// told at once and not only when the Pods are made.
-		if err := (&controller.DeploymentChecker{Injector: injector}).SetupWebhookWithManager(mgr); err != nil {
+		if err := webhookv1.SetupDeploymentWebhookWithManager(mgr, webhookFailurePolicy); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "deployment")
 			os.Exit(1)
 		}
 		// A Deployment can have only one policy. A second one is turned down
 		// when it is created.
-		if err := (&controller.PolicyChecker{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr); err != nil {
+		if err := webhookv1alpha1.SetupConfigReloadPolicyWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "policy")
 			os.Exit(1)
 		}

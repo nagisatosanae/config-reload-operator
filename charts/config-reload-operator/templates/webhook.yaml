@@ -57,8 +57,9 @@ spec:
 ---
 # Tells the API server to send a new Pod to the webhook before it is stored,
 # but only a Pod with the annotation
-# reload.nagisatosanae.github.io/inject: "true". The annotation and the path
-# are also in internal/controller/pod_webhook.go. Keep them the same.
+# reload.nagisatosanae.github.io/inject: "true". The annotation is also in
+# internal/settings/settings.go and the path in
+# internal/webhook/v1/pod_webhook.go. Keep them the same.
 #
 # failurePolicy is what the API server does when it cannot reach the webhook.
 # The manager gets the same value as an argument, for the Pods the webhook
@@ -105,7 +106,7 @@ webhooks:
 # changed. It goes through the checks its Pods will go through, so a
 # Deployment whose Pods could not get their settings is turned down when it
 # is applied, and not only later, when the Pods are made. The path is also
-# in internal/controller/deployment_check.go. Keep them the same.
+# in internal/webhook/v1/deployment_webhook.go. Keep them the same.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -149,8 +150,9 @@ webhooks:
         expression: "!has(object.metadata.deletionTimestamp)"
   # A Deployment can have only one policy. The webhook is asked about every
   # new ConfigReloadPolicy and turns it down when its Deployment already has
-  # one. The path is also in internal/controller/policy_check.go. Keep them
-  # the same.
+  # one. The path is also in
+  # internal/webhook/v1alpha1/configreloadpolicy_webhook.go. Keep them the
+  # same.
   - name: policy.reload.nagisatosanae.github.io
     admissionReviewVersions:
       - v1

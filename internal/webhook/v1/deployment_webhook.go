@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package v1
 
 import (
 	"context"
@@ -24,52 +24,54 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/nagisatosanae/config-reload-operator/internal/settings"
 )
 
-// checkPath is the URL path the Deployment check is served on.
+// DeploymentWebhookPath is the URL path the Deployment check is served on.
 //
 // The chart names the path too, in templates/webhook.yaml. Change one side
 // and you must change the other.
-const checkPath = "/validate-apps-v1-deployment"
+const DeploymentWebhookPath = "/validate-apps-v1-deployment"
 
-// DeploymentChecker is a validating admission webhook for Deployments.
+// DeploymentValidator is a validating admission webhook for Deployments.
 //
 // The settings go on Pods, and a Pod is made after "kubectl apply" has come
 // back. Without this check a Deployment whose Pods cannot get their settings
 // would be accepted, and the reason would only show up later, on its
-// ReplicaSet. The checker says it at once. It makes a Pod from the Pod
+// ReplicaSet. The validator says it at once. It makes a Pod from the Pod
 // template, lets the Pod webhook work on it, and throws the result away.
 //
 // It changes nothing. It runs in the same webhook server as the Pod webhook.
-type DeploymentChecker struct {
-	// Injector is the Pod webhook. Its checks and its failure policy are
+type DeploymentValidator struct {
+	// Defaulter is the Pod webhook. Its checks and its failure policy are
 	// used here.
-	Injector *PodInjector
+	Defaulter *PodDefaulter
 }
 
 // ValidateCreate checks a new Deployment.
-func (c *DeploymentChecker) ValidateCreate(ctx context.Context, dep *appsv1.Deployment) (admission.Warnings, error) {
-	return c.check(ctx, dep)
+func (v *DeploymentValidator) ValidateCreate(ctx context.Context, dep *appsv1.Deployment) (admission.Warnings, error) {
+	return v.check(ctx, dep)
 }
 
 // ValidateUpdate checks a Deployment that was changed.
-func (c *DeploymentChecker) ValidateUpdate(ctx context.Context, _, dep *appsv1.Deployment) (admission.Warnings, error) {
-	return c.check(ctx, dep)
+func (v *DeploymentValidator) ValidateUpdate(ctx context.Context, _, dep *appsv1.Deployment) (admission.Warnings, error) {
+	return v.check(ctx, dep)
 }
 
 // ValidateDelete lets every Deployment go.
-func (c *DeploymentChecker) ValidateDelete(context.Context, *appsv1.Deployment) (admission.Warnings, error) {
+func (v *DeploymentValidator) ValidateDelete(context.Context, *appsv1.Deployment) (admission.Warnings, error) {
 	return nil, nil
 }
 
 // check tells if the Pods of dep can get their settings. With the failure
 // policy Fail a Deployment whose Pods cannot is rejected. With Ignore it is
 // let in, and the user gets a warning.
-func (c *DeploymentChecker) check(ctx context.Context, dep *appsv1.Deployment) (admission.Warnings, error) {
+func (v *DeploymentValidator) check(ctx context.Context, dep *appsv1.Deployment) (admission.Warnings, error) {
 	// The API server already filters on the annotation. Check again here, so
 	// the rule does not depend on how the webhook was registered.
 	template := &dep.Spec.Template
-	if !asksForSettings(template.Annotations) {
+	if !settings.AskedFor(template.Annotations) {
 		return nil, nil
 	}
 	// A Deployment on its way out must not be held back.
@@ -83,22 +85,25 @@ func (c *DeploymentChecker) check(ctx context.Context, dep *appsv1.Deployment) (
 	}
 
 	pod := &corev1.Pod{ObjectMeta: template.ObjectMeta, Spec: template.Spec}
-	_, reason := c.Injector.injectFor(ctx, namespace, dep.Name, pod)
+	_, reason := v.Defaulter.injectFor(ctx, namespace, dep.Name, pod)
 	if reason == nil {
 		return nil, nil
 	}
-	if c.Injector.FailurePolicy == FailurePolicyIgnore {
+	if v.Defaulter.FailurePolicy == FailurePolicyIgnore {
 		return admission.Warnings{fmt.Sprintf(
 			"the Pods of Deployment %s will start without the watcher settings: %v", dep.Name, reason)}, nil
 	}
 	return nil, fmt.Errorf("deployment %s asks for the watcher settings with the annotation %s on its Pod template, but %w",
-		dep.Name, InjectAnnotation, reason)
+		dep.Name, settings.InjectAnnotation, reason)
 }
 
-// SetupWebhookWithManager serves the check on the manager's webhook server.
-func (c *DeploymentChecker) SetupWebhookWithManager(mgr ctrl.Manager) error {
+// SetupDeploymentWebhookWithManager serves the Deployment check on the
+// manager's webhook server. It runs the checks of the Pod webhook, with the
+// same failure policy.
+func SetupDeploymentWebhookWithManager(mgr ctrl.Manager, failurePolicy string) error {
+	defaulter := &PodDefaulter{Client: mgr.GetClient(), FailurePolicy: failurePolicy}
 	return ctrl.NewWebhookManagedBy(mgr, &appsv1.Deployment{}).
-		WithValidator(c).
-		WithValidatorCustomPath(checkPath).
+		WithValidator(&DeploymentValidator{Defaulter: defaulter}).
+		WithValidatorCustomPath(DeploymentWebhookPath).
 		Complete()
 }

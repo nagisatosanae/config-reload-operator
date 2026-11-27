@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package v1
 
 import (
 	"context"
@@ -30,6 +30,9 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/nagisatosanae/config-reload-operator/internal/settings"
+	"github.com/nagisatosanae/config-reload-operator/internal/testutil"
 )
 
 // The check in these tests is called by the envtest API server when a
@@ -39,18 +42,18 @@ import (
 // asks the webhook about. The chart has the same rule.
 const checkCondition = "has(object.spec.template.metadata) && " +
 	"has(object.spec.template.metadata.annotations) && " +
-	"'" + InjectAnnotation + "' in object.spec.template.metadata.annotations && " +
-	"object.spec.template.metadata.annotations['" + InjectAnnotation + "'] == 'true'"
+	"'" + settings.InjectAnnotation + "' in object.spec.template.metadata.annotations && " +
+	"object.spec.template.metadata.annotations['" + settings.InjectAnnotation + "'] == 'true'"
 
 // notDeletedCondition keeps a Deployment that is being deleted away from the
 // webhook. The chart has the same rule.
 const notDeletedCondition = "!has(object.metadata.deletionTimestamp)"
 
-// checkerWebhookConfig registers the check like the chart does.
-func checkerWebhookConfig() *admissionv1.ValidatingWebhookConfiguration {
+// deploymentWebhookConfig registers the check like the chart does.
+func deploymentWebhookConfig() *admissionv1.ValidatingWebhookConfiguration {
 	fail := admissionv1.Fail
 	none := admissionv1.SideEffectClassNone
-	path := checkPath
+	path := DeploymentWebhookPath
 	return &admissionv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{Name: "config-reload-operator"},
 		Webhooks: []admissionv1.ValidatingWebhook{{
@@ -60,7 +63,7 @@ func checkerWebhookConfig() *admissionv1.ValidatingWebhookConfiguration {
 			FailurePolicy:           &fail,
 			ClientConfig: admissionv1.WebhookClientConfig{
 				// envtest turns this into the address of the test server.
-				Service: &admissionv1.ServiceReference{Name: webhookService, Namespace: testNamespace, Path: &path},
+				Service: &admissionv1.ServiceReference{Name: testutil.WebhookService, Namespace: testutil.Namespace, Path: &path},
 			},
 			Rules: []admissionv1.RuleWithOperations{{
 				Operations: []admissionv1.OperationType{admissionv1.Create, admissionv1.Update},
@@ -78,31 +81,31 @@ func checkerWebhookConfig() *admissionv1.ValidatingWebhookConfiguration {
 	}
 }
 
-// checkerSwitch is the Deployment check the API server calls in these tests.
-// It follows the failure policy of testInjector.
-type checkerSwitch struct{ *policySwitch }
+// validatorSwitch is the Deployment check the API server calls in these tests.
+// It follows the failure policy of testDefaulter.
+type validatorSwitch struct{ *policySwitch }
 
-func (c checkerSwitch) checker() *DeploymentChecker {
-	return &DeploymentChecker{Injector: c.injector()}
+func (c validatorSwitch) validator() *DeploymentValidator {
+	return &DeploymentValidator{Defaulter: c.defaulter()}
 }
 
-func (c checkerSwitch) ValidateCreate(ctx context.Context, dep *appsv1.Deployment) (admission.Warnings, error) {
-	return c.checker().ValidateCreate(ctx, dep)
+func (c validatorSwitch) ValidateCreate(ctx context.Context, dep *appsv1.Deployment) (admission.Warnings, error) {
+	return c.validator().ValidateCreate(ctx, dep)
 }
 
-func (c checkerSwitch) ValidateUpdate(ctx context.Context, old, dep *appsv1.Deployment) (admission.Warnings, error) {
-	return c.checker().ValidateUpdate(ctx, old, dep)
+func (c validatorSwitch) ValidateUpdate(ctx context.Context, old, dep *appsv1.Deployment) (admission.Warnings, error) {
+	return c.validator().ValidateUpdate(ctx, old, dep)
 }
 
-func (c checkerSwitch) ValidateDelete(ctx context.Context, dep *appsv1.Deployment) (admission.Warnings, error) {
-	return c.checker().ValidateDelete(ctx, dep)
+func (c validatorSwitch) ValidateDelete(ctx context.Context, dep *appsv1.Deployment) (admission.Warnings, error) {
+	return c.validator().ValidateDelete(ctx, dep)
 }
 
 // deploymentFor returns the Deployment whose Pods would have the problem.
 func deploymentFor(p problem) *appsv1.Deployment {
-	pod := newPod(p.name)
+	pod := testutil.NewPod(p.name)
 	p.prepare(pod)
-	dep := newDeployment(p.name)
+	dep := testutil.NewDeployment(p.name)
 	dep.Spec.Template.Spec = pod.Spec
 	return dep
 }
@@ -138,9 +141,9 @@ func warningClient() (client.Client, *warnings) {
 
 var _ = Describe("Deployment check", func() {
 	It("lets a Deployment in when its Pods can get their settings, and does not change it", func() {
-		create(newPolicy("fine-reload", "fine"))
+		create(testutil.NewPolicy("fine-reload", "fine"))
 		c, w := warningClient()
-		dep := newDeployment("fine")
+		dep := testutil.NewDeployment("fine")
 		Expect(c.Create(ctx, dep)).To(Succeed())
 		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, dep))).To(Succeed()) })
 
@@ -155,14 +158,14 @@ var _ = Describe("Deployment check", func() {
 			err := k8sClient.Create(ctx, deploymentFor(p))
 			Expect(err).To(MatchError(apierrors.IsForbidden, "a Forbidden error"))
 			Expect(err.Error()).To(ContainSubstring(p.message))
-			Expect(err.Error()).To(ContainSubstring(InjectAnnotation), "the message names the annotation")
+			Expect(err.Error()).To(ContainSubstring(settings.InjectAnnotation), "the message names the annotation")
 		},
 		problemEntries(true),
 	)
 
 	DescribeTable("lets the same Deployment in with a warning when the failure policy is Ignore",
 		func(p problem) {
-			testInjector.use(FailurePolicyIgnore)
+			testDefaulter.use(FailurePolicyIgnore)
 			c, w := warningClient()
 			dep := deploymentFor(p)
 			Expect(c.Create(ctx, dep)).To(Succeed())
@@ -175,15 +178,15 @@ var _ = Describe("Deployment check", func() {
 
 	It("is not asked about a Deployment whose Pod template has no annotation", func() {
 		// No policy points at it, and it is let in all the same.
-		dep := newDeployment("unasked")
+		dep := testutil.NewDeployment("unasked")
 		dep.Spec.Template.Annotations = nil
 		create(dep)
 	})
 
 	It("turns down a change once the policy is gone, until the annotation is taken off", func() {
-		pol := newPolicy("gone-reload", "gone")
+		pol := testutil.NewPolicy("gone-reload", "gone")
 		create(pol)
-		create(newDeployment("gone"))
+		create(testutil.NewDeployment("gone"))
 		Expect(k8sClient.Delete(ctx, pol)).To(Succeed())
 
 		dep := getDeployment("gone")
@@ -197,10 +200,10 @@ var _ = Describe("Deployment check", func() {
 	})
 
 	It("never holds back a Deployment that is being deleted", func() {
-		pol := newPolicy("ending-reload", "ending")
+		pol := testutil.NewPolicy("ending-reload", "ending")
 		create(pol)
-		dep := newDeployment("ending")
-		dep.Finalizers = []string{holdFinalizer}
+		dep := testutil.NewDeployment("ending")
+		dep.Finalizers = []string{testutil.HoldFinalizer}
 		create(dep)
 		Expect(k8sClient.Delete(ctx, pol)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, dep)).To(Succeed())

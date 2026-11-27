@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package v1
 
 import (
 	"context"
@@ -27,13 +27,13 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	admissionv1 "k8s.io/api/admissionregistration/v1"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/nagisatosanae/config-reload-operator/internal/settings"
+	"github.com/nagisatosanae/config-reload-operator/internal/testutil"
+	webhookv1alpha1 "github.com/nagisatosanae/config-reload-operator/internal/webhook/v1alpha1"
 )
 
 // The webhook in these tests is called by the envtest API server, the same
@@ -41,63 +41,25 @@ import (
 // and only then sends the Pod to the webhook. There is no ReplicaSet
 // controller here, so the tests make the Pods a ReplicaSet would make.
 
-// injectCondition is the rule the API server uses to pick the Pods it sends
-// to the webhook. The chart has the same rule.
-const injectCondition = "has(object.metadata.annotations) && " +
-	"'" + InjectAnnotation + "' in object.metadata.annotations && " +
-	"object.metadata.annotations['" + InjectAnnotation + "'] == 'true'"
-
-// injectorWebhookConfig registers the webhook like the chart does.
-func injectorWebhookConfig() *admissionv1.MutatingWebhookConfiguration {
-	fail := admissionv1.Fail
-	none := admissionv1.SideEffectClassNone
-	path := injectPath
-	return &admissionv1.MutatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: "config-reload-operator"},
-		Webhooks: []admissionv1.MutatingWebhook{{
-			Name:                    "inject.reload.nagisatosanae.github.io",
-			AdmissionReviewVersions: []string{"v1"},
-			SideEffects:             &none,
-			FailurePolicy:           &fail,
-			ClientConfig: admissionv1.WebhookClientConfig{
-				// envtest turns this into the address of the test server.
-				Service: &admissionv1.ServiceReference{Name: webhookService, Namespace: testNamespace, Path: &path},
-			},
-			Rules: []admissionv1.RuleWithOperations{{
-				Operations: []admissionv1.OperationType{admissionv1.Create},
-				Rule: admissionv1.Rule{
-					APIGroups:   []string{""},
-					APIVersions: []string{"v1"},
-					Resources:   []string{"pods"},
-				},
-			}},
-			MatchConditions: []admissionv1.MatchCondition{{
-				Name:       "has-inject-annotation",
-				Expression: injectCondition,
-			}},
-		}},
-	}
-}
-
 // policySwitch is the webhook the API server calls in these tests. It is a
-// PodInjector whose failure policy a spec can change.
+// PodDefaulter whose failure policy a spec can change.
 type policySwitch struct {
 	mu     sync.Mutex
 	policy string
 	client client.Reader
 }
 
-var testInjector = &policySwitch{policy: FailurePolicyFail}
+var testDefaulter = &policySwitch{policy: FailurePolicyFail}
 
-// injector returns a PodInjector with the failure policy of this moment.
-func (s *policySwitch) injector() *PodInjector {
+// defaulter returns a PodDefaulter with the failure policy of this moment.
+func (s *policySwitch) defaulter() *PodDefaulter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return &PodInjector{Client: s.client, FailurePolicy: s.policy}
+	return &PodDefaulter{Client: s.client, FailurePolicy: s.policy}
 }
 
 func (s *policySwitch) Default(ctx context.Context, pod *corev1.Pod) error {
-	return s.injector().Default(ctx, pod)
+	return s.defaulter().Default(ctx, pod)
 }
 
 // use sets the failure policy until the spec is over.
@@ -113,64 +75,10 @@ func (s *policySwitch) use(policy string) {
 	})
 }
 
-// podHash stands for the hash a Deployment gives to a ReplicaSet and to the
-// Pods of it.
-const podHash = "5d4f8c7b9"
-
-// newPod returns a Pod the way the ReplicaSet of a Deployment makes it: it
-// has no name of its own yet, it carries the hash label and the annotation
-// from the Pod template, and the ReplicaSet is its owner. The containers are
-// the ones of newDeployment.
-func newPod(deployment string) *corev1.Pod {
-	replicaSet := deployment + "-" + podHash
-	controller := true
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: replicaSet + "-",
-			Namespace:    testNamespace,
-			Labels:       map[string]string{"app": deployment, appsv1.DefaultDeploymentUniqueLabelKey: podHash},
-			Annotations:  map[string]string{InjectAnnotation: "true"},
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: "apps/v1",
-				Kind:       "ReplicaSet",
-				Name:       replicaSet,
-				UID:        types.UID("11111111-2222-3333-4444-555555555555"),
-				Controller: &controller,
-			}},
-		},
-		Spec: corev1.PodSpec{Containers: []corev1.Container{
-			{Name: helperContainer, Image: "busybox"},
-			{Name: appContainer, Image: "nginx:stable-alpine"},
-		}},
-	}
-}
-
-// mountConfigMap gives the app container of the Pod its own mount of a
-// ConfigMap, the way a user writes it.
-func mountConfigMap(pod *corev1.Pod, configMap, dir string) *corev1.Pod {
-	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
-		Name: "config",
-		VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
-			LocalObjectReference: corev1.LocalObjectReference{Name: configMap},
-		}},
-	})
-	app := &pod.Spec.Containers[1]
-	app.VolumeMounts = append(app.VolumeMounts, corev1.VolumeMount{Name: "config", MountPath: dir})
-	return pod
-}
-
 // wantMark is the mark a new Pod must carry for the policy as it is now.
 func wantMark(policy string) string {
 	GinkgoHelper()
-	return markFor(getPolicy(policy))
-}
-
-// stored reads the Pod back from the API server.
-func stored(pod *corev1.Pod) *corev1.Pod {
-	GinkgoHelper()
-	got := &corev1.Pod{}
-	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), got)).To(Succeed())
-	return got
+	return settings.MarkFor(getPolicy(policy))
 }
 
 // addedVolumes returns the volumes the webhook put on the Pod.
@@ -200,11 +108,11 @@ func operatorEnv(container corev1.Container) []corev1.EnvVar {
 func expectUntouched(pod *corev1.Pod) {
 	GinkgoHelper()
 	Expect(addedVolumes(pod)).To(BeEmpty(), "a volume was added")
-	Expect(pod.Annotations).NotTo(HaveKey(InjectedAnnotation), "the Pod is marked as injected")
+	Expect(pod.Annotations).NotTo(HaveKey(settings.InjectedAnnotation), "the Pod is marked as injected")
 }
 
 var defaultEnv = []corev1.EnvVar{
-	{Name: envWatchDir, Value: mountPath},
+	{Name: envWatchDir, Value: testutil.MountPath},
 	{Name: envSignal, Value: "SIGHUP"},
 	{Name: envDebounce, Value: "3"},
 }
@@ -225,14 +133,14 @@ type problem struct {
 var problems = []problem{
 	{
 		what: "no policy points at its Deployment", name: "alone",
-		prepare: func(*corev1.Pod) { create(newPolicy("alone-reload", "someone-else")) },
+		prepare: func(*corev1.Pod) { create(testutil.NewPolicy("alone-reload", "someone-else")) },
 		message: `no ConfigReloadPolicy in namespace "default" points at Deployment "alone"`,
 	},
 	{
 		what: "the policy names a container it does not have", name: "odd",
 		prepare: func(*corev1.Pod) {
-			pol := newPolicy("odd-reload", "odd")
-			pol.Spec.Containers[0].Name = otherContainer
+			pol := testutil.NewPolicy("odd-reload", "odd")
+			pol.Spec.Containers[0].Name = testutil.OtherContainer
 			create(pol)
 		},
 		message: `the Pod has no container named "sidecar"`,
@@ -240,7 +148,7 @@ var problems = []problem{
 	{
 		what: "the container already sets a name that belongs to the operator", name: "taken",
 		prepare: func(pod *corev1.Pod) {
-			create(newPolicy("taken-reload", "taken"))
+			create(testutil.NewPolicy("taken-reload", "taken"))
 			pod.Spec.Containers[1].Env = []corev1.EnvVar{{Name: envWatchDir, Value: "/mine"}}
 		},
 		message: "already sets " + envWatchDir,
@@ -248,16 +156,16 @@ var problems = []problem{
 	{
 		what: "something else is mounted at the path", name: "busy",
 		prepare: func(pod *corev1.Pod) {
-			create(newPolicy("busy-reload", "busy"))
-			mountConfigMap(pod, "another-config", mountPath)
+			create(testutil.NewPolicy("busy-reload", "busy"))
+			testutil.MountConfigMap(pod, "another-config", testutil.MountPath)
 		},
-		message: "already mounts something else at " + mountPath,
+		message: "already mounts something else at " + testutil.MountPath,
 	},
 	{
 		what: "the ConfigMap is mounted at the path with subPath", name: "sub",
 		prepare: func(pod *corev1.Pod) {
-			create(newPolicy("sub-reload", "sub"))
-			mountConfigMap(pod, "sub-config", mountPath)
+			create(testutil.NewPolicy("sub-reload", "sub"))
+			testutil.MountConfigMap(pod, "sub-config", testutil.MountPath)
 			pod.Spec.Containers[1].VolumeMounts[0].SubPath = "default.conf"
 		},
 		message: "with subPath",
@@ -265,8 +173,8 @@ var problems = []problem{
 	{
 		what: "one of the two containers of the policy cannot get its settings", name: "half",
 		prepare: func(pod *corev1.Pod) {
-			pol := newPolicy("half-reload", "half")
-			pol.Spec.Containers = append(pol.Spec.Containers, helperSettings())
+			pol := testutil.NewPolicy("half-reload", "half")
+			pol.Spec.Containers = append(pol.Spec.Containers, testutil.HelperSettings())
 			create(pol)
 			pod.Spec.Containers[0].Env = []corev1.EnvVar{{Name: envSignal, Value: "mine"}}
 		},
@@ -275,18 +183,18 @@ var problems = []problem{
 	{
 		what: "two policies point at its Deployment", name: "twice",
 		prepare: func(*corev1.Pod) {
-			create(newPolicy("twice-a", "twice"))
-			// The check of a new policy does not let this happen. It is
-			// off here, as when two policies are made at the same moment.
-			testPolicyCheck.off()
-			create(newPolicy("twice-b", "twice"))
+			create(testutil.NewPolicy("twice-a", "twice"))
+			// The check of a new policy does not let this happen. It is not
+			// part of this suite, so the second policy gets in, as when two
+			// policies are made at the same moment.
+			create(testutil.NewPolicy("twice-b", "twice"))
 		},
 		message: `both point at Deployment "twice"`,
 	},
 	{
 		what: "it does not belong to a Deployment", name: "bare",
 		prepare: func(pod *corev1.Pod) {
-			create(newPolicy("bare-reload", "bare"))
+			create(testutil.NewPolicy("bare-reload", "bare"))
 			pod.OwnerReferences = nil
 		},
 		message: "it does not belong to a Deployment",
@@ -309,9 +217,9 @@ func problemEntries(forDeployments bool) []TableEntry {
 
 var _ = Describe("Pod webhook", func() {
 	It("puts the volume, the mount and the env on a new Pod", func() {
-		userEnv := []corev1.EnvVar{{Name: "TZ", Value: tz}}
-		create(newPolicy("early-reload", "early"))
-		pod := newPod("early")
+		userEnv := []corev1.EnvVar{{Name: "TZ", Value: "Asia/Seoul"}}
+		create(testutil.NewPolicy("early-reload", "early"))
+		pod := testutil.NewPod("early")
 		pod.Spec.Containers[1].Env = userEnv
 		create(pod)
 
@@ -324,80 +232,80 @@ var _ = Describe("Pod webhook", func() {
 		Expect(volumes[0].ConfigMap).NotTo(BeNil())
 		Expect(volumes[0].ConfigMap.Name).To(Equal("early-config"))
 		Expect(app.VolumeMounts).To(ContainElement(
-			corev1.VolumeMount{Name: volumes[0].Name, MountPath: mountPath, ReadOnly: true}))
+			corev1.VolumeMount{Name: volumes[0].Name, MountPath: testutil.MountPath, ReadOnly: true}))
 
 		helper := got.Spec.Containers[0]
 		Expect(helper.Env).To(BeEmpty(), "the other container is left alone")
 		for _, m := range helper.VolumeMounts {
 			Expect(m.Name).NotTo(Equal(volumes[0].Name), "the other container is left alone")
 		}
-		Expect(got.Annotations).To(HaveKeyWithValue(InjectedAnnotation, wantMark("early-reload")))
+		Expect(got.Annotations).To(HaveKeyWithValue(settings.InjectedAnnotation, wantMark("early-reload")))
 	})
 
 	It("carries the reload settings of the policy", func() {
-		pol := newPolicy("tuned-reload", "tuned")
+		pol := testutil.NewPolicy("tuned-reload", "tuned")
 		ten := int32(10)
-		pol.Spec.Containers[0].Reload.Signal = sigUSR1
+		pol.Spec.Containers[0].Reload.Signal = testutil.SigUSR1
 		pol.Spec.Containers[0].Reload.DebounceSeconds = &ten
 		pol.Spec.Containers[0].Reload.ValidateCommand = []string{"nginx", "-t"}
 		create(pol)
-		pod := newPod("tuned")
+		pod := testutil.NewPod("tuned")
 		create(pod)
 
 		Expect(stored(pod).Spec.Containers[1].Env).To(Equal([]corev1.EnvVar{
-			{Name: envWatchDir, Value: mountPath},
-			{Name: envSignal, Value: sigUSR1},
+			{Name: envWatchDir, Value: testutil.MountPath},
+			{Name: envSignal, Value: testutil.SigUSR1},
 			{Name: envDebounce, Value: "10"},
 			{Name: envValidate, Value: `["nginx","-t"]`},
 		}))
 	})
 
 	It("uses a mount of the same ConfigMap that is already at the path", func() {
-		create(newPolicy("own-reload", "own"))
-		pod := mountConfigMap(newPod("own"), "own-config", mountPath)
+		create(testutil.NewPolicy("own-reload", "own"))
+		pod := testutil.MountConfigMap(testutil.NewPod("own"), "own-config", testutil.MountPath)
 		create(pod)
 
 		got := stored(pod)
 		Expect(addedVolumes(got)).To(BeEmpty(), "the user's own volume is enough")
 		Expect(got.Spec.Containers[1].Env).To(Equal(defaultEnv))
-		Expect(got.Annotations).To(HaveKey(InjectedAnnotation))
+		Expect(got.Annotations).To(HaveKey(settings.InjectedAnnotation))
 	})
 
 	It("gives every container of the policy its own settings", func() {
-		pol := newPolicy("pair-reload", "pair")
-		pol.Spec.Containers = append(pol.Spec.Containers, helperSettings())
+		pol := testutil.NewPolicy("pair-reload", "pair")
+		pol.Spec.Containers = append(pol.Spec.Containers, testutil.HelperSettings())
 		create(pol)
-		pod := newPod("pair")
+		pod := testutil.NewPod("pair")
 		create(pod)
 
 		got := stored(pod)
 		Expect(addedVolumes(got)).To(HaveLen(2))
-		Expect(got.Spec.Containers[0].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: helperMountPath}))
-		Expect(got.Spec.Containers[1].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: mountPath}))
+		Expect(got.Spec.Containers[0].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: testutil.HelperMountPath}))
+		Expect(got.Spec.Containers[1].Env[0]).To(Equal(corev1.EnvVar{Name: envWatchDir, Value: testutil.MountPath}))
 
 		By("the mark names both containers, in the order of their names")
 		entries := getPolicy("pair-reload").Spec.Containers
-		Expect(got.Annotations).To(HaveKeyWithValue(InjectedAnnotation,
-			helperContainer+"="+settingsHash(&entries[1])+","+appContainer+"="+settingsHash(&entries[0])))
+		Expect(got.Annotations).To(HaveKeyWithValue(settings.InjectedAnnotation,
+			testutil.HelperContainer+"="+settings.Hash(&entries[1])+","+testutil.AppContainer+"="+settings.Hash(&entries[0])))
 	})
 
 	DescribeTable("rejects a Pod that cannot get its settings, and says why",
 		func(p problem) {
-			pod := newPod(p.name)
+			pod := testutil.NewPod(p.name)
 			p.prepare(pod)
 
 			err := k8sClient.Create(ctx, pod)
 			Expect(err).To(MatchError(apierrors.IsForbidden, "a Forbidden error"))
 			Expect(err.Error()).To(ContainSubstring(p.message))
-			Expect(err.Error()).To(ContainSubstring(InjectAnnotation), "the message names the annotation")
+			Expect(err.Error()).To(ContainSubstring(settings.InjectAnnotation), "the message names the annotation")
 		},
 		problemEntries(false),
 	)
 
 	DescribeTable("lets the same Pod start as it was written when the failure policy is Ignore",
 		func(p problem) {
-			testInjector.use(FailurePolicyIgnore)
-			pod := newPod(p.name)
+			testDefaulter.use(FailurePolicyIgnore)
+			pod := testutil.NewPod(p.name)
 			p.prepare(pod)
 			written := pod.DeepCopy()
 			create(pod)
@@ -412,8 +320,8 @@ var _ = Describe("Pod webhook", func() {
 
 	DescribeTable("is not sent to the webhook without the annotation",
 		func(annotations map[string]string) {
-			create(newPolicy("plain-reload", "plain"))
-			pod := newPod("plain")
+			create(testutil.NewPolicy("plain-reload", "plain"))
+			pod := testutil.NewPod("plain")
 			pod.Annotations = annotations
 			create(pod)
 
@@ -422,14 +330,14 @@ var _ = Describe("Pod webhook", func() {
 			Expect(operatorEnv(got.Spec.Containers[1])).To(BeEmpty())
 		},
 		Entry("no annotation at all", nil),
-		Entry("the annotation set to false", map[string]string{InjectAnnotation: "false"}),
+		Entry("the annotation set to false", map[string]string{settings.InjectAnnotation: "false"}),
 	)
 
 	It("takes a Pod that already carries the settings as it is", func() {
 		// A copy of a Pod that went through the webhook, made again by hand.
-		create(newPolicy("copy-reload", "copy"))
-		pod := newPod("copy")
-		pod.Annotations[InjectedAnnotation] = "copy-reload@1"
+		create(testutil.NewPolicy("copy-reload", "copy"))
+		pod := testutil.NewPod("copy")
+		pod.Annotations[settings.InjectedAnnotation] = "copy-reload@1"
 		pod.Spec.Containers[1].Env = slices.Clone(defaultEnv)
 		create(pod)
 
@@ -439,9 +347,9 @@ var _ = Describe("Pod webhook", func() {
 	})
 
 	It("leaves a Pod that runs alone when its policy is deleted", func() {
-		pol := newPolicy("leaving-reload", "leaving")
+		pol := testutil.NewPolicy("leaving-reload", "leaving")
 		create(pol)
-		pod := newPod("leaving")
+		pod := testutil.NewPod("leaving")
 		create(pod)
 		before := stored(pod)
 		Expect(operatorEnv(before.Spec.Containers[1])).To(Equal(defaultEnv))
@@ -457,17 +365,17 @@ var _ = Describe("Pod webhook", func() {
 // The annotation, the path and the rule are written twice: in the Go code
 // and in the chart. This test fails when the two no longer agree.
 func TestChartMatchesTheWebhook(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "charts", "config-reload-operator", "templates", "webhook.yaml"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "charts", "config-reload-operator", "templates", "webhook.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	chart := strings.Join(strings.Fields(string(raw)), " ")
 
 	for what, want := range map[string]string{
-		"path":                     "path: " + injectPath,
-		"rule":                     injectCondition,
-		"path of the check":        "path: " + checkPath,
-		"path of the policy check": "path: " + policyCheckPath,
+		"path":                     "path: " + PodWebhookPath,
+		"rule":                     testutil.InjectCondition,
+		"path of the check":        "path: " + DeploymentWebhookPath,
+		"path of the policy check": "path: " + webhookv1alpha1.ConfigReloadPolicyWebhookPath,
 		"rule of the check":        checkCondition,
 		"rule for deleted objects": `expression: "` + notDeletedCondition + `"`,
 	} {

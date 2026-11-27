@@ -54,11 +54,12 @@ There are three parts.
   directory. When the content changes, it checks the new config and sends
   the signal to the app.
 - The **webhook** reads `ConfigReloadPolicy` objects. A policy names a
-  Deployment, a container, a ConfigMap and the path to mount it at. When a
-  Pod of that Deployment is created, the webhook adds the ConfigMap volume,
-  its mount and the watcher's settings as `CONFIG_RELOAD_*` environment
-  variables. It only does this for a Pod that asks for it with an
-  annotation. The Deployment itself is never changed.
+  Deployment and, for each container, a ConfigMap and the path to mount it
+  at. When a Pod of that Deployment is created, the webhook adds the
+  ConfigMap volume, its mount and the watcher's settings as
+  `CONFIG_RELOAD_*` environment variables. It only does this for a Pod
+  that asks for it with an annotation. The Deployment itself is never
+  changed.
 - The **controller** writes into the status of the policy how many Pods
   carry the settings. It writes nothing else.
 
@@ -87,11 +88,12 @@ The webhook and the controller are not on the reload path. Reloads keep
 working while both are down. The watcher never talks to the Kubernetes API,
 so app Pods need no extra permissions.
 
-The webhook is only needed when a Pod is created. A Pod that runs is never
-changed, also not when its policy is deleted. But while the policy is gone,
-a Deployment that still has the annotation cannot start new Pods. With
-`Ignore` they start without the settings. Why it is built this way is in
-[docs/design.md](docs/design.md).
+The webhook is asked when a Pod is created, when a Deployment with the
+annotation is applied and when a policy is created. A Pod that runs is
+never changed, also not when its policy is deleted. But while the policy is
+gone, a Deployment that still has the annotation cannot start new Pods.
+With `Ignore` they start without the settings. Why it is built this way is
+in [docs/design.md](docs/design.md).
 
 ## What is better now
 
@@ -368,23 +370,24 @@ make test              # everything
 make lint              # golangci-lint
 ```
 
-`make test` also runs the controller tests. They start a real API server and
-etcd on your machine with envtest. No cluster is needed, and `make`
-downloads the two binaries the first time.
+`make test` also runs the webhook and controller tests. They start a real
+API server and etcd on your machine with envtest. No cluster is needed, and
+`make` downloads the two binaries the first time.
 
 | Part | Tests | What they cover |
 |---|---|---|
 | watcher | 25 Go tests | Content hash with the kubelet's symlink layout, quiet time, the check command, settings from the environment, the start script, a watch process that fails without hurting the app. |
-| controller | 78 envtest cases and 8 Go tests | Defaults and bad values at the API server, a second policy for a Deployment, what the webhook puts on a new Pod, every reason a Pod is rejected and the same Pods under Ignore, the same check when a Deployment is applied, the Pod counts in the status, every not-ready reason, nothing written to a Deployment or to a Pod that runs. |
+| webhook and controller | 78 envtest cases and 8 Go tests | Defaults and bad values at the API server, a second policy for a Deployment, what the webhook puts on a new Pod, every reason a Pod is rejected and the same Pods under Ignore, the same check when a Deployment is applied, the Pod counts in the status, every not-ready reason, nothing written to a Deployment or to a Pod that runs. |
 
 GitHub Actions runs the tests and the linter on every push.
 
 **What the tests do not cover.** No automated test runs the whole chain on a
 real cluster: the kubelet, NGINX, the images and the Helm chart together.
 The parts are tested one by one. The watcher tests copy what the kubelet
-does when it swaps the files, in a temporary directory. The controller tests
-use a real API server. Joining the parts is checked by hand with the quick
-start above. An end-to-end test on a kind cluster is the next thing to add.
+does when it swaps the files, in a temporary directory. The webhook and
+controller tests use a real API server. Joining the parts is checked by hand
+with the quick start above. An end-to-end test on a kind cluster is the next
+thing to add.
 
 ## Limits
 

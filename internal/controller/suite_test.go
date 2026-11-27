@@ -30,7 +30,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -42,6 +41,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	reloadv1alpha1 "github.com/nagisatosanae/config-reload-operator/api/v1alpha1"
+	"github.com/nagisatosanae/config-reload-operator/internal/testutil"
+	webhookv1 "github.com/nagisatosanae/config-reload-operator/internal/webhook/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -83,11 +84,10 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
-		// Register the Pod webhook, the Deployment check and the check of a
-		// new policy with the API server.
+		// Register the Pod webhook with the API server. The controller counts
+		// the Pods the webhook marked, so the specs need the real marks.
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
-			MutatingWebhooks:   []*admissionv1.MutatingWebhookConfiguration{injectorWebhookConfig()},
-			ValidatingWebhooks: []*admissionv1.ValidatingWebhookConfiguration{checkerWebhookConfig(), policyCheckWebhookConfig()},
+			MutatingWebhooks: []*admissionv1.MutatingWebhookConfiguration{testutil.PodWebhookConfig(webhookv1.PodWebhookPath)},
 		},
 	}
 
@@ -112,12 +112,8 @@ var _ = BeforeSuite(func() {
 		Port:    install.LocalServingPort,
 		CertDir: install.LocalServingCertDir,
 	})
-	testInjector.client = k8sClient
-	server.Register(injectPath, admission.WithDefaulter[*corev1.Pod](scheme.Scheme, testInjector))
-	server.Register(checkPath, admission.WithValidator[*appsv1.Deployment](scheme.Scheme, checkerSwitch{testInjector}))
-	testPolicyCheck.client = k8sClient
-	server.Register(policyCheckPath,
-		admission.WithValidator[*reloadv1alpha1.ConfigReloadPolicy](scheme.Scheme, testPolicyCheck))
+	server.Register(webhookv1.PodWebhookPath, admission.WithDefaulter[*corev1.Pod](scheme.Scheme,
+		&webhookv1.PodDefaulter{Client: k8sClient, FailurePolicy: webhookv1.FailurePolicyIgnore}))
 	go func() {
 		defer GinkgoRecover()
 		Expect(server.Start(ctx)).To(Succeed())

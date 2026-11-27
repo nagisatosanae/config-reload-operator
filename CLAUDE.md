@@ -20,9 +20,13 @@ reload는 부가 기능이다. 온전하게 동작해야 하지만, 이 기능 �
 
 | 경로 | 내용 |
 |---|---|
-| `cmd/watcher/` | watcher 바이너리와 시작 스크립트 `watcher-entrypoint.sh`. 스크립트가 watcher를 백그라운드로 띄우고 앱으로 바뀐다. watcher는 설정 디렉터리를 감시하고, 내용 해시 비교 → debounce → 검증 명령 → 시그널 순서로 동작한다. Kubernetes API를 호출하지 않는다. |
+| `cmd/watcher/` | watcher 바이너리와 시작 스크립트 `watcher-entrypoint.sh`. 스크립트가 watcher를 백그라운드로 띄우고 앱으로 바뀐다. watcher는 설정 디렉터리를 감시하고, debounce → 내용 해시 비교 → 검증 명령 → 시그널 순서로 동작한다. Kubernetes API를 호출하지 않는다. |
 | `cmd/manager/` | manager 바이너리의 진입점. 실행 인자로 역할을 고른다. |
-| `internal/controller/` | Pod 웹훅(`pod_webhook.go`), Deployment 검사(`deployment_check.go`), 정책 검사(`policy_check.go`), `ConfigReloadPolicy` reconciler와 테스트. |
+| `internal/controller/` | `ConfigReloadPolicy` reconciler와 테스트. |
+| `internal/webhook/v1/` | Pod 웹훅(`pod_webhook.go`의 `PodDefaulter`)과 Deployment 검사(`deployment_webhook.go`의 `DeploymentValidator`), 그리고 테스트. kubebuilder가 웹훅을 두는 자리와 이름이다. |
+| `internal/webhook/v1alpha1/` | 정책 검사(`configreloadpolicy_webhook.go`의 `ConfigReloadPolicyValidator`)와 테스트. |
+| `internal/settings/` | 웹훅과 controller가 같이 쓰는 것. 애노테이션 이름 둘, `AskedFor`, `DeploymentOf`, `PoliciesFor`, `Hash`, `MarkFor`, `ContainerIndex`. |
+| `internal/testutil/` | 여러 패키지의 테스트가 같이 쓰는 Deployment, 정책, Pod, 그리고 envtest용 Pod 웹훅 등록. |
 | `api/v1alpha1/` | CRD 타입. 기본값과 검증은 kubebuilder 마커로 정의한다. |
 | `charts/config-reload-operator/` | Helm 차트. 공식 설치 경로다. |
 | `config/` | controller-gen이 만든 CRD와 RBAC, 샘플 정책. |
@@ -38,20 +42,20 @@ reload는 부가 기능이다. 온전하게 동작해야 하지만, 이 기능 �
 - **watcher의 어떤 실패도 앱을 내리면 안 된다.** watcher 실행 파일이 없어도 스크립트는 앱을 띄운다. 감시가 멈추면 watcher가 스스로 다시 시도하고, panic도 잡는다. 스크립트에 앱 시작을 막을 수 있는 것을 넣지 않는다.
 - **`CONFIG_RELOAD_DIR`가 없으면** 스크립트는 watcher를 띄우지 않는다. 정책이 없어도 이미지가 그대로 동작해야 한다.
 - **watcher는 앱을 띄우지 않는다.** 인자 없이 실행하면 감시하고, `--healthcheck`는 watch 프로세스가 살아 있는지 알려 준다. 그 밖의 인자(0.1 방식의 `watcher -- 명령`)나 PID 1로 실행되면 시작 스크립트를 쓰라는 메시지를 내고 끝난다.
-- **환경 변수 계약**: `CONFIG_RELOAD_DIR`, `CONFIG_RELOAD_SIGNAL`, `CONFIG_RELOAD_DEBOUNCE_SECONDS`, `CONFIG_RELOAD_VALIDATE_COMMAND`(JSON 문자열 배열). 이름이 `cmd/watcher/main.go`와 `internal/controller/pod_webhook.go` 양쪽에 상수로 따로 정의되어 있고, 스크립트에도 `CONFIG_RELOAD_DIR`가 있다. 하나를 바꾸면 다른 쪽도 같이 바꾼다.
+- **환경 변수 계약**: `CONFIG_RELOAD_DIR`, `CONFIG_RELOAD_SIGNAL`, `CONFIG_RELOAD_DEBOUNCE_SECONDS`, `CONFIG_RELOAD_VALIDATE_COMMAND`(JSON 문자열 배열). 이름이 `cmd/watcher/main.go`와 `internal/webhook/v1/pod_webhook.go` 양쪽에 상수로 따로 정의되어 있고, 스크립트에도 `CONFIG_RELOAD_DIR`가 있다. 하나를 바꾸면 다른 쪽도 같이 바꾼다.
 
 **웹훅**
 
-- **주입은 Pod에 한다.** `PodInjector`는 애노테이션 `reload.nagisatosanae.github.io/inject: "true"`가 있는 Pod가 만들어질 때, 그 Deployment를 가리키는 정책을 읽어, 정책이 적은 container마다 ConfigMap volume, mount, env를 넣는다. env는 세 개이고, 정책에 검사 명령이 있으면 네 개다. Deployment는 고치지 않는다. 애노테이션은 Deployment의 `metadata`가 아니라 Pod 템플릿에 붙인다.
+- **주입은 Pod에 한다.** `PodDefaulter`는 애노테이션 `reload.nagisatosanae.github.io/inject: "true"`가 있는 Pod가 만들어질 때, 그 Deployment를 가리키는 정책을 읽어, 정책이 적은 container마다 ConfigMap volume, mount, env를 넣는다. env는 세 개이고, 정책에 검사 명령이 있으면 네 개다. Deployment는 고치지 않는다. 애노테이션은 Deployment의 `metadata`가 아니라 Pod 템플릿에 붙인다.
 - **웹훅은 정책만 읽는다.** Deployment 이름은 Pod 자신에게서 알아낸다(소유자 ReplicaSet 이름에서 `pod-template-hash`를 뗀다).
 - **전부 아니면 전무다.** container 하나라도 설정을 받을 수 없으면 아무것도 넣지 않는다. 문제의 종류: 정책 없음, container 없음, 우리 env 이름 넷 중 하나를 사용자가 이미 씀, mount 경로에 다른 것이 있음(같은 ConfigMap이면 그대로 쓴다), 같은 ConfigMap이 그 경로에 `subPath`로 mount됨, 한 Deployment를 두 정책이 가리킴, 정책에 container 목록이 없음(0.2의 모양), Deployment의 Pod가 아님, 정책을 읽지 못함.
 - **`failurePolicy`가 문제를 어떻게 다룰지 정한다.** `Fail`(기본)이면 Pod를 거부하고 이유를 메시지에 적는다. `Ignore`면 사용자가 쓴 그대로 통과시킨다. 차트 값 `webhook.failurePolicy` 하나가 웹훅 등록(API server가 웹훅에 닿지 못했을 때)과 manager 인자 `--webhook-failure-policy`(웹훅이 문제를 발견했을 때) 양쪽에 들어간다. 둘이 어긋나면 안 된다.
 - **웹훅은 정책의 spec에 있는 값만 넣는다.** Pod에 넣는 값은 모두 spec에서 온다. 코드에 고정된 것은 env 이름, volume 이름의 앞부분처럼 넣는 방식뿐이다. spec에 없는 정보를 Pod에 반영하지 않는다.
-- **Deployment마다 정책은 하나다.** `PolicyChecker`는 정책을 만들 때(CREATE) 같은 Deployment를 가리키는 정책이 이미 있으면 거부한다. `workloadRef`는 고칠 수 없으므로 CREATE만 본다. 이 검사는 `--webhook-failure-policy`와 상관없이 거부한다. 정책을 거부해도 앱은 다치지 않기 때문이다. 동시에 만든 두 정책은 둘 다 통과할 수 있고, 그 경우는 Pod를 만들 때 문제로 잡힌다. 한 정책에 같은 container를 두 번 적는 것은 CRD의 목록 규칙(`listType=map`)이 막는다. 웹훅이 내려가 있으면 `Fail`에서는 정책을 새로 만들 수 없다.
-- **주입한 Pod에는 표시를 남긴다.** 애노테이션 `reload.nagisatosanae.github.io/injected`에 `container이름=해시`를 이름순으로, 쉼표로 이어 적는다(`markFor`). 해시는 정책이 그 container에 대해 적은 항목 전체로 만든다(`settingsHash`: 항목의 JSON을 FNV-1a 32비트로 해시한다. 함수와 글자 표기는 Kubernetes의 `pod-template-hash`와 같고, 넣는 내용은 다르다. Kubernetes는 JSON이 아니라 값을 찍은 글자를 넣는다). controller는 지금 정책으로 같은 표시를 만들어 Pod의 것과 통째로 비교한다. 같으면 지금 설정이고, 다르면 `Outdated`, 없으면 `NotInjected`다. 내용을 비교하므로, 지웠다가 같은 내용으로 다시 만든 정책은 기존 Pod를 그대로 `Injected`로 본다. 0.2가 남긴 표시(`정책이름@세대`, `정책이름@세대@UID`)는 따로 읽지 않는다. 그때의 정책은 새 모양으로 다시 써야 하므로 그 표시는 언제나 `Outdated`다. 이 표시가 이미 있는 Pod는 다시 주입하지 않는다.
+- **Deployment마다 정책은 하나다.** `ConfigReloadPolicyValidator`는 정책을 만들 때(CREATE) 같은 Deployment를 가리키는 정책이 이미 있으면 거부한다. `workloadRef`는 고칠 수 없으므로 CREATE만 본다. 이 검사는 `--webhook-failure-policy`와 상관없이 거부한다. 정책을 거부해도 앱은 다치지 않기 때문이다. 동시에 만든 두 정책은 둘 다 통과할 수 있고, 그 경우는 Pod를 만들 때 문제로 잡힌다. 한 정책에 같은 container를 두 번 적는 것은 CRD의 목록 규칙(`listType=map`)이 막는다. 웹훅이 내려가 있으면 `Fail`에서는 정책을 새로 만들 수 없다.
+- **주입한 Pod에는 표시를 남긴다.** 애노테이션 `reload.nagisatosanae.github.io/injected`에 `container이름=해시` 항목을 정렬해서, 쉼표로 이어 적는다(`settings.MarkFor`). 해시는 정책이 그 container에 대해 적은 항목 전체로 만든다(`settings.Hash`: 항목의 JSON을 FNV-1a 32비트로 해시한다. 함수와 글자 표기는 Kubernetes의 `pod-template-hash`와 같고, 넣는 내용은 다르다. Kubernetes는 JSON이 아니라 값을 찍은 글자를 넣는다). controller는 지금 정책으로 같은 표시를 만들어 Pod의 것과 통째로 비교한다. 같으면 지금 설정이고, 다르면 `Outdated`, 없으면 `NotInjected`다. 내용을 비교하므로, 지웠다가 같은 내용으로 다시 만든 정책은 기존 Pod를 그대로 `Injected`로 본다. 0.2가 남긴 표시(`정책이름@세대`, `정책이름@세대@UID`)는 따로 읽지 않는다. 그때의 정책은 새 모양으로 다시 써야 하므로 그 표시는 언제나 `Outdated`다. 이 표시가 이미 있는 Pod는 다시 주입하지 않는다.
 - **해시 만드는 방법은 바꾸지 않는다.** Pod는 뜰 때 받은 해시를 계속 갖고 있다. 방법이 바뀌면 upgrade 뒤에 돌고 있는 Pod가 전부 `Outdated`로 보인다. `TestSettingsHash`가 값을 고정해 둔다. container 항목에 기본값이 있는 필드를 추가해도 같은 일이 생긴다.
-- **Deployment는 apply할 때 검사한다.** `DeploymentChecker`는 Pod 템플릿으로 Pod를 만들어 `PodInjector.injectFor`를 돌려 보고 결과를 버린다. Pod 웹훅과 같은 코드이므로 두 판단이 어긋나지 않는다. `Fail`이면 거부하고 `Ignore`면 경고를 낸다. 삭제 중인 Deployment는 항상 통과시킨다.
-- **웹훅의 이름들이 두 곳에 있다**: 애노테이션, 경로 세 개(`/mutate--v1-pod`, `/validate-apps-v1-deployment`, `/validate-reload-nagisatosanae-github-io-v1alpha1-configreloadpolicy`), 필터 식이 `internal/controller/`의 Go 파일과 `charts/config-reload-operator/templates/webhook.yaml`에 따로 적혀 있다. 하나를 바꾸면 다른 쪽도 같이 바꾼다. `TestChartMatchesTheWebhook`이 어긋남을 잡는다.
+- **Deployment는 apply할 때 검사한다.** `DeploymentValidator`는 Pod 템플릿으로 Pod를 만들어 `PodDefaulter.injectFor`를 돌려 보고 결과를 버린다. Pod 웹훅과 같은 코드이므로 두 판단이 어긋나지 않는다. `Fail`이면 거부하고 `Ignore`면 경고를 낸다. 삭제 중인 Deployment는 항상 통과시킨다.
+- **웹훅의 이름들이 두 곳에 있다**: 애노테이션, 경로 세 개(`/mutate--v1-pod`, `/validate-apps-v1-deployment`, `/validate-reload-nagisatosanae-github-io-v1alpha1-configreloadpolicy`), 필터 식이 Go 파일과 `charts/config-reload-operator/templates/webhook.yaml`에 따로 적혀 있다. Go 쪽 자리는 애노테이션이 `internal/settings/`, 경로가 `internal/webhook/`, 필터 식이 테스트 쪽(`internal/testutil/`의 `InjectCondition`, `internal/webhook/v1/deployment_webhook_test.go`)이다. 하나를 바꾸면 다른 쪽도 같이 바꾼다. `TestChartMatchesTheWebhook`이 어긋남을 잡는다.
 - **웹훅은 인증서가 있을 때만 켜진다.** manager는 `--webhook-cert-path`가 있을 때만 웹훅을 등록한다. 인증서는 Helm이 만든다. cert-manager는 쓰지 않는다.
 
 **controller**
@@ -92,12 +96,12 @@ make docker-build IMG=manager:dev     # manager 이미지
 - watcher와 demo 이미지는 Docker 밖에서 빌드한 `bin/watcher`와 `cmd/watcher/watcher-entrypoint.sh`를 복사한다. 이미지를 만들기 전에 `./build.sh`를 먼저 실행한다. `.dockerignore`가 기본으로 모든 파일을 빼므로, 이미지에 넣을 파일은 거기에 다시 넣어 줘야 한다.
 - 텍스트 파일은 LF로 저장한다(`.gitattributes`). 시작 스크립트가 CRLF면 container가 뜨지 않는다.
 - e2e 테스트는 없다. 전체 흐름은 README의 quick start로 직접 확인한다.
-- `kubebuilder create ...`는 이 저장소에서 끝까지 돌지 않는다. `cmd/main.go`와 `test/e2e/`를 찾는데 둘 다 없다. 새 조각은 저장소의 구조에 맞춰 손으로 쓴다. 웹훅 설정도 `+kubebuilder:webhook` 마커가 아니라 차트 템플릿에 직접 쓴다.
+- `kubebuilder create ...`는 이 저장소에서 끝까지 돌지 않는다. `cmd/main.go`와 `test/e2e/`를 찾는데 둘 다 없다. 새 조각은 저장소의 구조에 맞춰 손으로 쓴다. 손으로 쓰더라도 kubebuilder가 만드는 자리와 이름을 따른다: 웹훅은 `internal/webhook/<버전>/<kind>_webhook.go`, 타입은 `<Kind>Defaulter`와 `<Kind>Validator`, 등록 함수는 `Setup<Kind>WebhookWithManager`. 진입점만 다르다. 바이너리가 둘이라 `cmd/main.go`가 아니라 `cmd/manager/main.go`다. 웹훅 설정도 `+kubebuilder:webhook` 마커가 아니라 차트 템플릿에 직접 쓴다.
 
 ## 테스트
 
 - watcher: 표준 `testing` 패키지. kubelet의 `..data` 심볼릭 링크 교체를 임시 디렉터리에서 흉내 낸다. 시작 스크립트 테스트는 실제 스크립트를 돌리고, 테스트 바이너리가 watcher 역할을 한다.
-- controller와 웹훅: Ginkgo + Gomega + envtest(실제 API 서버와 etcd). `-short`를 주면 envtest 스위트는 건너뛴다. 웹훅과 Deployment 검사는 envtest API 서버가 실제로 부른다. envtest에는 ReplicaSet controller가 없으므로, 테스트가 ReplicaSet이 만드는 모양의 Pod를 직접 만든다.
+- controller와 웹훅: Ginkgo + Gomega + envtest(실제 API 서버와 etcd). 스위트는 패키지마다 하나씩 셋이다(`internal/controller`, `internal/webhook/v1`, `internal/webhook/v1alpha1`). controller 스위트에도 Pod 웹훅을 올린다. controller가 세는 표시를 웹훅이 실제로 남기게 하기 위해서다. `-short`를 주면 envtest 스위트는 건너뛴다. 웹훅과 Deployment 검사는 envtest API 서버가 실제로 부른다. envtest에는 ReplicaSet controller가 없으므로, 테스트가 ReplicaSet이 만드는 모양의 Pod를 직접 만든다.
 - 동작을 바꾸면 테스트도 같이 바꾼다. README의 테스트 개수 표와 어긋나면 표도 맞춘다.
 
 ## 브랜치와 릴리스
