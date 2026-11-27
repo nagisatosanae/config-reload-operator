@@ -1,0 +1,16 @@
+# The workflows pin every action to a commit ID. Dependabot looks once a
+# week for a newer version. When there is one, it opens a pull request that
+# changes the ID and the version comment next to it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Work happens on develop, so the pull request goes there.
+    target-branch: develop
+    # One pull request for all actions, not one for each.
+    groups:
+      actions:
+        patterns:
+          - "*"
